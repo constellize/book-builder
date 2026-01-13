@@ -3,17 +3,77 @@ Link Filter for Constellize Book
 Processes repository links and ensures they work correctly in different output formats
 ]]--
 
--- Helper function to check if a link is a repository link
+-- URL patterns and full URLs (read from metadata)
+local codepromptu_pattern = nil
+local site_pattern = nil
+
+-- Full URLs for fallback replacement (also from metadata)
+local codepromptu_url = nil
+local site_url = nil
+
+-- Initialize patterns and URLs from document metadata
+function Meta(meta)
+  if meta['codepromptu-repo-pattern'] then
+    codepromptu_pattern = pandoc.utils.stringify(meta['codepromptu-repo-pattern'])
+    -- Derive full URL from pattern
+    codepromptu_url = "https://" .. codepromptu_pattern .. "/blob/main"
+  end
+  if meta['site-pattern'] then
+    site_pattern = pandoc.utils.stringify(meta['site-pattern'])
+    -- Derive full URL from pattern
+    site_url = "https://" .. site_pattern
+  end
+  return meta
+end
+
+-- Helper to escape special Lua pattern characters
+function escapePattern(str)
+  if not str then return nil end
+  return str:gsub("([%.%-%+%*%?%[%]%^%$%(%)%%])", "%%%1")
+end
+
+-- Helper function to check if a link is a repository/site link
+-- Checks for both placeholder syntax (if not yet replaced) and actual URLs
 function isRepositoryLink(url)
-  return url:match("{REPO_BASE}") ~= nil
+  -- Check for placeholder syntax (may not be replaced yet)
+  if url:match("{CODEPROMPTU_REPO_BASE}") or
+     url:match("{SITE_BASE}") then
+    return true
+  end
+  
+  -- Check for actual expanded URLs using patterns from metadata
+  if codepromptu_pattern and url:match(escapePattern(codepromptu_pattern)) then
+    return true
+  end
+  if site_pattern and url:match(escapePattern(site_pattern)) then
+    return true
+  end
+  
+  return false
+end
+
+-- Helper function to check if a link is a site link
+function isSiteLink(url)
+  if url:match("{SITE_BASE}") then return true end
+  if site_pattern and url:match(escapePattern(site_pattern)) then return true end
+  return false
+end
+
+-- Helper function to check if a link is a CodePromptu repository link
+function isCodepromptuRepoLink(url)
+  if url:match("{CODEPROMPTU_REPO_BASE}") then return true end
+  if codepromptu_pattern and url:match(escapePattern(codepromptu_pattern)) then return true end
+  return false
 end
 
 -- Helper function to check if a link points to a code file
 function isCodeLink(url)
-  local codeExtensions = {".java", ".js", ".ts", ".py", ".go", ".rs", ".cpp", ".c", ".h", ".hpp", ".md", ".yml", ".yaml", ".json", ".xml", ".sql", ".sh", ".dockerfile"}
+  -- Pre-escaped extension patterns for Lua pattern matching
+  local codeExtensionPatterns = {"%.java", "%.js", "%.ts", "%.py", "%.go", "%.rs", "%.cpp", "%.c", "%.h", "%.hpp", "%.md", "%.yml", "%.yaml", "%.json", "%.xml", "%.sql", "%.sh", "dockerfile"}
   
-  for _, ext in ipairs(codeExtensions) do
-    if url:lower():match(ext:gsub("%.", "%%%.") .. "$") or url:lower():match(ext:gsub("%.", "%%%.") .. "#") then
+  local lowerUrl = url:lower()
+  for _, extPattern in ipairs(codeExtensionPatterns) do
+    if lowerUrl:match(extPattern .. "$") or lowerUrl:match(extPattern .. "#") then
       return true
     end
   end
@@ -65,6 +125,7 @@ function processLinkForLatex(elem)
   local text = pandoc.utils.stringify(elem.content)
   
   if isRepositoryLink(url) then
+    -- For code file links, add line number info
     if isCodeLink(url) then
       local fileType = getFileType(url)
       local startLine, endLine = extractLineNumbers(url)
@@ -78,15 +139,15 @@ function processLinkForLatex(elem)
           linkText = linkText .. " (line " .. startLine .. ")"
         end
       end
-      
-      -- For PDF, we want the link to be clickable but also show the URL in a footnote
-      local footnoteText = "\\footnote{\\url{" .. url .. "}}"
-      
-      return {
-        pandoc.Link(elem.content, url, elem.title),
-        pandoc.RawInline("latex", footnoteText)
-      }
     end
+    
+    -- For PDF/print, all repository links get clickable text plus a footnote with the URL
+    local footnoteText = "\\footnote{\\url{" .. url .. "}}"
+    
+    return {
+      pandoc.Link(elem.content, url, elem.title),
+      pandoc.RawInline("latex", footnoteText)
+    }
   end
   
   return elem
@@ -162,12 +223,23 @@ end
 function CodeBlock(elem)
   -- Look for repository URLs in code comments
   local content = elem.text
+  local modified = false
   
-  -- Replace {REPO_BASE} in code blocks (useful for configuration examples)
-  if content:match("{REPO_BASE}") then
-    -- Note: The actual replacement should have been done by the build script
-    -- This is just a fallback
-    content = content:gsub("{REPO_BASE}", "https://github.com/yourusername/constellize-book/blob/main")
+  -- Replace {CODEPROMPTU_REPO_BASE} in code blocks (using URL from metadata)
+  -- Note: The actual replacement should have been done by the build script
+  -- This is just a fallback using metadata-derived URLs
+  if content:match("{CODEPROMPTU_REPO_BASE}") and codepromptu_url then
+    content = content:gsub("{CODEPROMPTU_REPO_BASE}", codepromptu_url)
+    modified = true
+  end
+  
+  -- Replace {SITE_BASE} in code blocks (using URL from metadata)
+  if content:match("{SITE_BASE}") and site_url then
+    content = content:gsub("{SITE_BASE}", site_url)
+    modified = true
+  end
+  
+  if modified then
     return pandoc.CodeBlock(content, elem.attr)
   end
   
@@ -177,10 +249,21 @@ end
 -- Process inline code that might contain repository references
 function Code(elem)
   local content = elem.text
+  local modified = false
   
-  -- Replace {REPO_BASE} in inline code
-  if content:match("{REPO_BASE}") then
-    content = content:gsub("{REPO_BASE}", "https://github.com/yourusername/constellize-book/blob/main")
+  -- Replace {CODEPROMPTU_REPO_BASE} in inline code (using URL from metadata)
+  if content:match("{CODEPROMPTU_REPO_BASE}") and codepromptu_url then
+    content = content:gsub("{CODEPROMPTU_REPO_BASE}", codepromptu_url)
+    modified = true
+  end
+  
+  -- Replace {SITE_BASE} in inline code (using URL from metadata)
+  if content:match("{SITE_BASE}") and site_url then
+    content = content:gsub("{SITE_BASE}", site_url)
+    modified = true
+  end
+  
+  if modified then
     return pandoc.Code(content, elem.attr)
   end
   
@@ -188,10 +271,8 @@ function Code(elem)
 end
 
 -- Return the filter functions
+-- Meta must run first to initialize patterns, then Link/CodeBlock/Code
 return {
-  {
-    Link = Link,
-    CodeBlock = CodeBlock,
-    Code = Code
-  }
+  { Meta = Meta },
+  { Link = Link, CodeBlock = CodeBlock, Code = Code }
 }

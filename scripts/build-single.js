@@ -16,14 +16,28 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-// Configuration
+// Import main configuration
+const bookConfig = require('../config/book.config.js');
+
+// Configuration (URLs derived from main config)
 const config = {
   texLivePath: '/usr/local/texlive/2025/bin/universal-darwin',
   buildDir: '../build',
-  repoBase: {
-    pdf: 'https://github.com/yourusername/yourrepo/blob/main',
-    web: 'https://github.com/yourusername/yourrepo/blob/main',
-    development: 'file://' + path.resolve(__dirname, '../../')
+  // CodePromptu repository URLs (from main config)
+  codepromptuRepoBase: {
+    pdf: bookConfig.repository.codepromptuBaseUrl,
+    html: bookConfig.repository.codepromptuBaseUrl,
+    web: bookConfig.repository.codepromptuBaseUrl,
+    epub: bookConfig.repository.codepromptuBaseUrl,
+    development: bookConfig.outputs.development.codepromptuRepoBaseUrl
+  },
+  // Constellize website URLs (from main config)
+  siteBase: {
+    pdf: bookConfig.repository.siteBaseUrl,
+    html: bookConfig.repository.siteBaseUrl,
+    web: bookConfig.repository.siteBaseUrl,
+    epub: bookConfig.repository.siteBaseUrl,
+    development: bookConfig.outputs.development.siteBaseUrl
   }
 };
 
@@ -91,9 +105,13 @@ function processContent(inputFile, format) {
   
   let content = fs.readFileSync(inputFile, 'utf8');
   
-  // Replace repository base URLs
-  const repoBaseUrl = config.repoBase[format] || config.repoBase.pdf;
-  content = content.replace(/\{REPO_BASE\}/g, repoBaseUrl);
+  // Replace {CODEPROMPTU_REPO_BASE} with CodePromptu repository URL
+  const codepromptuRepoBaseUrl = config.codepromptuRepoBase[format] || config.codepromptuRepoBase.pdf;
+  content = content.replace(/\{CODEPROMPTU_REPO_BASE\}/g, codepromptuRepoBaseUrl);
+  
+  // Replace {SITE_BASE} with Constellize website URL
+  const siteBaseUrl = config.siteBase[format] || config.siteBase.pdf;
+  content = content.replace(/\{SITE_BASE\}/g, siteBaseUrl);
   
   // Convert blockquote callouts to proper callout syntax
   content = content.replace(/^> \*\*📁 Code Reference:(.*?)\*\*$([\s\S]*?)(?=^(?:[^>]|$))/gm, (match, title, body) => {

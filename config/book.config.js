@@ -46,8 +46,14 @@ module.exports = {
 
   // Repository configuration for link processing
   repository: {
-    // Base URL will be replaced in {REPO_BASE} placeholders
-    baseUrl: process.env.REPO_BASE_URL || "https://github.com/yourusername/constellize-book/blob/main",
+    // CodePromptu repository - for code examples and implementation
+    // Replaced in {CODEPROMPTU_REPO_BASE} placeholders  
+    codepromptuBaseUrl: process.env.CODEPROMPTU_REPO_BASE_URL || "https://github.com/nowucca/codepromptu/blob/main",
+    
+    // Constellize website - for prompts, templates, book resources, and online content
+    // Replaced in {SITE_BASE} placeholders
+    siteBaseUrl: process.env.SITE_BASE_URL || "https://constellize.com",
+    
     localPath: "./codepromptu", // for development builds
     branch: "main"
   },
@@ -56,7 +62,8 @@ module.exports = {
   outputs: {
     digital: {
       directory: './build/digital',
-      repoBaseUrl: 'https://github.com/yourusername/constellize-book/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
       dpi: 300,
@@ -66,7 +73,8 @@ module.exports = {
     },
     print: {
       directory: './build/print',
-      repoBaseUrl: 'https://github.com/yourusername/constellize-book/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
       dpi: 300,
@@ -77,26 +85,30 @@ module.exports = {
     },
     web: {
       directory: './build/web',
-      repoBaseUrl: 'https://github.com/yourusername/constellize-book/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
       format: 'html5',
       standalone: true
     },
     development: {
       directory: './build/development',
-      repoBaseUrl: 'file://' + path.resolve(__dirname, '../..'),
+      codepromptuRepoBaseUrl: 'file://' + path.resolve(__dirname, '../../codepromptu'),
+      siteBaseUrl: 'http://localhost:5173', // Local development server
       format: 'html5',
       standalone: true
     },
     epub: {
       directory: './build/epub',
-      repoBaseUrl: 'https://github.com/yourusername/constellize-book/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
       format: 'epub3',
       standalone: true
     },
-    // Legacy alias for backward compatibility
+    // Alias for 'digital' format
     pdf: {
       directory: './build/digital', // Default to digital format
-      repoBaseUrl: 'https://github.com/yourusername/constellize-book/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
       dpi: 300,

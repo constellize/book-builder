@@ -73,9 +73,9 @@ class LinkValidator {
       return;
     }
     
-    // Check {REPO_BASE} placeholders
-    if (linkUrl.includes('{REPO_BASE}')) {
-      const repoPath = linkUrl.replace('{REPO_BASE}', '');
+    // Check {BOOK_REPO_BASE} placeholders (book-related content)
+    if (linkUrl.includes('{BOOK_REPO_BASE}')) {
+      const repoPath = linkUrl.replace('{BOOK_REPO_BASE}', '');
       const fullPath = path.resolve(this.rootDir, repoPath);
       
       if (!await fs.pathExists(fullPath)) {
@@ -83,7 +83,24 @@ class LinkValidator {
           file: fileName,
           link: linkText,
           url: linkUrl,
-          issue: 'Repository file not found',
+          issue: 'Book repository file not found',
+          path: fullPath
+        });
+      }
+      return;
+    }
+    
+    // Check {CODEPROMPTU_REPO_BASE} placeholders (CodePromptu code examples)
+    if (linkUrl.includes('{CODEPROMPTU_REPO_BASE}')) {
+      const repoPath = linkUrl.replace('{CODEPROMPTU_REPO_BASE}', '');
+      const fullPath = path.resolve(this.rootDir, 'codepromptu', repoPath);
+      
+      if (!await fs.pathExists(fullPath)) {
+        this.errors.push({
+          file: fileName,
+          link: linkText,
+          url: linkUrl,
+          issue: 'CodePromptu repository file not found',
           path: fullPath
         });
       }

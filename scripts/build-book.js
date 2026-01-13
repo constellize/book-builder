@@ -393,13 +393,21 @@ class BookBuilder {
   }
 
   /**
-   * Process {REPO_BASE} placeholders in content
+   * Process repository placeholders in content
+   * Handles {CODEPROMPTU_REPO_BASE} and {SITE_BASE}
    */
   processRepositoryLinks(content) {
     const outputConfig = config.outputs[this.options.target];
-    const repoBaseUrl = outputConfig.repoBaseUrl;
+    
+    // Replace {CODEPROMPTU_REPO_BASE} with CodePromptu repository URL
+    const codepromptuRepoBaseUrl = outputConfig.codepromptuRepoBaseUrl || config.repository.codepromptuBaseUrl;
+    content = content.replace(/{CODEPROMPTU_REPO_BASE}/g, codepromptuRepoBaseUrl);
+    
+    // Replace {SITE_BASE} with Constellize website URL
+    const siteBaseUrl = outputConfig.siteBaseUrl || config.repository.siteBaseUrl;
+    content = content.replace(/{SITE_BASE}/g, siteBaseUrl);
 
-    return content.replace(/{REPO_BASE}/g, repoBaseUrl);
+    return content;
   }
 
   /**
@@ -512,6 +520,14 @@ class BookBuilder {
         }
       }
     }
+    
+    // Pass repository URL patterns to filters via metadata (for link detection)
+    // Extract domain/path patterns from the full URLs in config
+    const codepromptuPattern = config.repository.codepromptuBaseUrl.replace(/^https?:\/\//, '').replace(/\/blob\/main$/, '');
+    const sitePattern = config.repository.siteBaseUrl.replace(/^https?:\/\//, '');
+    
+    pandocArgs.push(`--metadata=codepromptu-repo-pattern:${codepromptuPattern}`);
+    pandocArgs.push(`--metadata=site-pattern:${sitePattern}`);
 
     const pandocCommand = pandocArgs.join(" ");
 
