@@ -29,7 +29,9 @@ number-sections: true
 citeproc: true
 
 # Filters (processed in order) - Digital version with left-bar callouts
+# Note: pandoc-crossref must come before citeproc
 filters:
+  - pandoc-crossref
   - book-builder/templates/filters/minted-filter.lua
   - book-builder/templates/filters/callout-filter-digital.lua
   - book-builder/templates/filters/link-filter.lua
@@ -84,5 +86,3 @@ variables:
   professional: true
 
 # Output options
-standalone: true
-self-contained: false

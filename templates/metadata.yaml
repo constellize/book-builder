@@ -74,9 +74,19 @@ lof: false  # List of figures
 link-citations: true
 reference-section-title: "References"
 
+# pandoc-crossref settings for section references
+secPrefix: "Section"
+linkReferences: true
+nameInLink: true
+codeBlockCaptions: false
+
+# Fix minted/pandoc-crossref \listoflistings conflict
+header-includes: |
+  \let\listoflistings\relax
+
 # Code highlighting
 highlight-style: "github"
-listings: true
+listings: false
 
 # Custom variables for template
 book-style: true

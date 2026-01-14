@@ -218,7 +218,8 @@ function generatePromptRefCallout(content, elem)
     end
   end
 
-  -- Add link at bottom: "Link: [prompt name]" with footnote for print version
+  -- Add link at bottom: "Link: [prompt name]" with footnote showing full URL
+  -- For print version, footnotes make URLs accessible to readers
   latex = latex .. string.format([[
 
 \vspace{0.5em}

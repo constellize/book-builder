@@ -117,8 +117,15 @@ $endif$
 % Define pandocbounded command for newer Pandoc versions
 \providecommand{\pandocbounded}[1]{#1}
 
+% Pre-define \listoflistings to prevent conflict between minted and pandoc-crossref
+\makeatletter
+\@ifundefined{listoflistings}{%
+  \newcommand{\listoflistings}{\@starttoc{lol}}%
+}{}
+\makeatother
+
 % Code highlighting with Minted (requires Pygments)
-\usepackage{minted}
+\usepackage[newfloat=false]{minted}
 \setminted{
   breaklines=true,
   breakanywhere=false,
