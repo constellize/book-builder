@@ -21,6 +21,7 @@ module.exports = {
   source: {
     root: path.resolve(__dirname, '../..'),
     foreword: 'foreword-faq.md', // Foreword comes first
+    introduction: 'introduction.md', // Introduction after foreword, before chapters
     chapters: ['ch[1-9].md'], // Main chapters (1-9)
     bibliography: 'references.json', // Bibliography database (CSL-JSON)
     appendices: ['app[AB].md'], // Appendices (A-B only, others migrated to website)

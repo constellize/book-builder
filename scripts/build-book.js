@@ -195,6 +195,15 @@ class BookBuilder {
       }
     }
 
+    // Add introduction after foreword if it exists
+    if (config.source.introduction) {
+      const introductionPath = path.resolve(this.rootDir, config.source.introduction);
+      if (await fs.pathExists(introductionPath)) {
+        allFiles.push(introductionPath);
+        console.log(chalk.gray("Added introduction"));
+      }
+    }
+
     // Add chapters
     for (const pattern of config.source.chapters) {
       const chapterPattern = path.resolve(this.rootDir, pattern);
@@ -255,7 +264,7 @@ class BookBuilder {
   }
 
   /**
-   * Process special sections (foreword, appendices) for proper numbering
+   * Process special sections (foreword, introduction, appendices) for proper numbering
    */
   processSpecialSections(content, fileName) {
     // Handle foreword - make it unnumbered
@@ -268,6 +277,18 @@ class BookBuilder {
       
       // Convert ### headings to ## headings with {.unnumbered}
       content = content.replace(/^### (.+)$/gm, '## $1 {.unnumbered}');
+    }
+
+    // Handle introduction - make it unnumbered like the foreword
+    if (fileName === 'introduction.md') {
+      // Convert the first # Introduction to # Introduction {.unnumbered}
+      content = content.replace(/^# Introduction$/m, '# Introduction {.unnumbered}');
+      
+      // Convert all ## headings to ## headings with {.unnumbered}
+      content = content.replace(/^## (.+)$/gm, '## $1 {.unnumbered}');
+      
+      // Convert ### headings to ### headings with {.unnumbered}
+      content = content.replace(/^### (.+)$/gm, '### $1 {.unnumbered}');
     }
 
     // Handle appendices - add appendix marker and fix titles
@@ -407,6 +428,18 @@ class BookBuilder {
     const siteBaseUrl = outputConfig.siteBaseUrl || config.repository.siteBaseUrl;
     content = content.replace(/{SITE_BASE}/g, siteBaseUrl);
 
+    // Transform inline image paths based on output format
+    // Convert images/... paths to build/assets/images/... for PDF or ../assets/images/... for HTML
+    const isPdfTarget = outputConfig && outputConfig.format === 'pdf';
+    
+    if (isPdfTarget) {
+      // PDF: Pandoc runs from root, needs build/assets/images path
+      content = content.replace(/\(images\//g, '(build/assets/images/');
+    } else {
+      // HTML: Output is in build/{target}/, needs ../assets/images path
+      content = content.replace(/\(images\//g, '(../assets/images/');
+    }
+
     return content;
   }
 
@@ -455,8 +488,16 @@ class BookBuilder {
     pandocArgs.push(`--output="${outputPath}"`);
 
     // Add citation processing for all formats
+    // Note: For PDF targets, citeproc is included in the defaults file filters
+    // We only need to provide bibliography and CSL paths
     if (config.citations) {
-      pandocArgs.push("--citeproc");
+      const outputConfig = config.outputs[this.options.target];
+      const isPdfBuild = outputConfig && outputConfig.format === 'pdf';
+      
+      // Only add --citeproc for non-PDF builds (PDF has it in defaults filters)
+      if (!isPdfBuild) {
+        pandocArgs.push("--citeproc");
+      }
       
       // Add bibliography
       const bibliographyPath = path.resolve(this.rootDir, config.citations.bibliography);
@@ -569,6 +610,14 @@ class BookBuilder {
       const forewordFile = path.join(intermediateDir, config.source.foreword);
       if (await fs.pathExists(forewordFile)) {
         files.push(forewordFile);
+      }
+    }
+
+    // Add introduction after foreword
+    if (config.source.introduction) {
+      const introductionFile = path.join(intermediateDir, config.source.introduction);
+      if (await fs.pathExists(introductionFile)) {
+        files.push(introductionFile);
       }
     }
 

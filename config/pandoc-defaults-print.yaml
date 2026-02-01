@@ -25,9 +25,6 @@ toc-depth: 3
 # Section numbering
 number-sections: true
 
-# Cross-references
-citeproc: true
-
 # Filters (processed in order) - Print version with complete box callouts
 # Note: pandoc-crossref must come before citeproc
 filters:
@@ -35,6 +32,7 @@ filters:
   - book-builder/templates/filters/minted-filter.lua
   - book-builder/templates/filters/callout-filter-print.lua
   - book-builder/templates/filters/link-filter.lua
+  - citeproc
 
 # Metadata
 metadata-files:
