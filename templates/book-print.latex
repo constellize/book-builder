@@ -105,6 +105,15 @@ $endif$
 \usepackage{array}
 \usepackage{multirow}
 \usepackage{wrapfig}
+\usepackage{calc}  % Required for Pandoc's proportional table column widths
+
+% Fix for Pandoc's table column width calculations
+\makeatletter
+\@ifundefined{c@LTchunksize}{\newcounter{LTchunksize}}{}
+% Define the 'none' counter that Pandoc's table code references
+\@ifundefined{c@none}{\newcounter{none}}{}
+\providecommand{\LT@none}{}
+\makeatother
 
 % Graphics and figures
 \usepackage{graphicx}
