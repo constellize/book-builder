@@ -162,6 +162,11 @@ function buildFormat(inputFile, format, outputName) {
   
   let outputFile, pandocArgs;
   
+  // Get absolute paths for templates and filters
+  const scriptDir = path.dirname(__filename);
+  const templateDir = path.resolve(scriptDir, '../templates');
+  const filterDir = path.resolve(scriptDir, '../templates/filters');
+  
   switch (format) {
     case 'pdf':
       outputFile = path.join(outputDir, `${outputName}.pdf`);
@@ -169,11 +174,13 @@ function buildFormat(inputFile, format, outputName) {
         tempFile,
         '-o', outputFile,
         '--pdf-engine=xelatex',
-        '--template=../templates/book.latex',
-        '--lua-filter=../templates/filters/callout-filter.lua',
-        '--lua-filter=../templates/filters/link-filter.lua',
+        '--pdf-engine-opt=-shell-escape',  // Required for minted
+        `--template=${path.join(templateDir, 'book-print.latex')}`,
+        `--lua-filter=${path.join(filterDir, 'minted-filter.lua')}`,
+        `--lua-filter=${path.join(filterDir, 'callout-filter-print.lua')}`,
+        `--lua-filter=${path.join(filterDir, 'link-filter.lua')}`,
         '--metadata', 'title="Constellize Book"',
-        '--metadata', 'author="Your Name"',
+        '--metadata', 'author="Steve Atkinson"',
         '--dpi=300',
         '--standalone'
       ];
@@ -232,10 +239,13 @@ function buildFormat(inputFile, format, outputName) {
       env.PATH = `${config.texLivePath}:${env.PATH}`;
     }
     
+    // Run from book root directory (parent of book-builder) for font paths
+    const bookRootDir = path.resolve(path.dirname(__filename), '../..');
+    
     execSync(`pandoc ${pandocArgs.join(' ')}`, { 
       stdio: 'inherit',
       env: env,
-      cwd: path.dirname(__filename)
+      cwd: bookRootDir
     });
     
     console.log(`✅ ${format.toUpperCase()} generated: ${outputFile}`);
