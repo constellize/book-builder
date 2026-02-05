@@ -101,6 +101,9 @@ test: verify
 	@if [ -f "$(SCRIPTS_DIR)/validate-links.js" ]; then \
 		node $(SCRIPTS_DIR)/validate-links.js; \
 	fi
+	@if [ -f "$(SCRIPTS_DIR)/validate-images.js" ]; then \
+		node $(SCRIPTS_DIR)/validate-images.js; \
+	fi
 	@echo "✅ Tests passed!"
 
 # Build (book-builder doesn't build itself, just verifies)

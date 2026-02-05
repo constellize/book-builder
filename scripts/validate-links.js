@@ -72,6 +72,11 @@ class LinkValidator {
     if (linkUrl.startsWith('#') || linkUrl.startsWith('mailto:')) {
       return;
     }
+
+    // Skip {SITE_BASE} links - these refer to the external companion website
+    if (linkUrl.includes('{SITE_BASE}')) {
+      return;
+    }
     
     // Check {BOOK_REPO_BASE} placeholders (book-related content)
     if (linkUrl.includes('{BOOK_REPO_BASE}')) {
