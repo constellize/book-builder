@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="$lang$" xml:lang="$lang$">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+$for(author)$
+  <meta name="author" content="$author$" />
+$endfor$
+$if(description)$
+  <meta name="description" content="$description$" />
+$endif$
+$if(keywords)$
+  <meta name="keywords" content="$keywords$" />
+$endif$
+  <title>$if(title)$$title$$endif$</title>
+  <style>
+    /* Atkinson Hyperlegible font - load from Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+    /* Base typography */
+    html {
+      font-size: 18px;
+    }
+
+    body {
+      font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.7;
+      max-width: 750px;
+      margin: 0 auto;
+      padding: 3rem 2rem;
+      color: #333;
+      background: #fff;
+    }
+
+    /* Title page styles */
+    .title-page {
+      text-align: center;
+      padding: 4rem 0;
+      margin-bottom: 2rem;
+      border-bottom: 2px solid #eee;
+      page-break-after: always;
+    }
+
+    .title-page h1 {
+      font-size: 3rem;
+      margin-bottom: 0.5rem;
+      color: #1a1a1a;
+    }
+
+    .title-page .subtitle {
+      font-size: 1.5rem;
+      color: #555;
+      font-style: italic;
+      margin-bottom: 2rem;
+    }
+
+    .title-page .author {
+      font-size: 1.25rem;
+      color: #333;
+      margin-bottom: 0.5rem;
+    }
+
+    .title-page .publisher {
+      font-size: 1rem;
+      color: #666;
+    }
+
+    /* Copyright page styles */
+    .copyright-page {
+      text-align: center;
+      padding: 3rem 2rem;
+      margin-bottom: 2rem;
+      border-bottom: 2px solid #eee;
+      font-size: 0.9rem;
+      color: #555;
+      page-break-after: always;
+    }
+
+    .copyright-page .edition {
+      font-size: 1.1rem;
+      font-weight: bold;
+      margin-bottom: 1.5rem;
+      color: #333;
+    }
+
+    .copyright-page .copyright {
+      margin-bottom: 1rem;
+    }
+
+    .copyright-page .license {
+      margin-bottom: 1.5rem;
+      line-height: 1.6;
+    }
+
+    .copyright-page .disclaimer {
+      font-style: italic;
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #ddd;
+    }
+
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 {
+      font-weight: bold;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      line-height: 1.3;
+    }
+
+    h1 { font-size: 2.25rem; color: #1a1a1a; }
+    h2 { font-size: 1.75rem; color: #2a2a2a; }
+    h3 { font-size: 1.4rem; color: #3a3a3a; }
+    h4 { font-size: 1.2rem; color: #4a4a4a; }
+
+    /* Paragraphs */
+    p {
+      margin: 1rem 0;
+    }
+
+    /* Code blocks */
+    code, pre {
+      font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+      font-size: 0.85rem;
+    }
+
+    pre {
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: 6px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 1.5rem 0;
+      line-height: 1.5;
+    }
+
+    code {
+      background: #f1f3f4;
+      padding: 0.2em 0.4em;
+      border-radius: 4px;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      border-radius: 0;
+    }
+
+    /* Links */
+    a {
+      color: #0066cc;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Callout boxes */
+    .callout {
+      margin: 2rem 0;
+      padding: 1.25rem 1.5rem;
+      border-radius: 8px;
+      border-left: 4px solid;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+
+    .callout-title {
+      font-weight: bold;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .callout.codeReference {
+      background: #f0f8ff;
+      border-left-color: #0066cc;
+    }
+
+    .callout.architecture {
+      background: #f8f0ff;
+      border-left-color: #7c3aed;
+    }
+
+    .callout.narrative {
+      background: #f8f9fa;
+      border-left-color: #6c757d;
+    }
+
+    .callout.implementation {
+      background: #f0fff4;
+      border-left-color: #22c55e;
+    }
+
+    .callout.crossreference {
+      background: #fff8f0;
+      border-left-color: #f97316;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0;
+    }
+
+    th, td {
+      padding: 0.875rem;
+      text-align: left;
+      border-bottom: 1px solid #dee2e6;
+    }
+
+    th {
+      background: #f8f9fa;
+      font-weight: bold;
+    }
+
+    /* Lists */
+    ul, ol {
+      margin: 1rem 0;
+      padding-left: 2rem;
+    }
+
+    li {
+      margin: 0.5rem 0;
+    }
+
+    /* Blockquotes */
+    blockquote {
+      margin: 1.5rem 0;
+      padding: 1.25rem 1.5rem;
+      background: #f8f9fa;
+      border-left: 4px solid #dee2e6;
+      font-style: italic;
+    }
+
+    /* Images */
+    img {
+      max-width: 100%;
+      height: auto;
+      margin: 1.5rem 0;
+      border-radius: 6px;
+    }
+
+    /* Table of Contents */
+    #TOC {
+      background: #f8f9fa;
+      padding: 2rem;
+      border-radius: 8px;
+      margin: 2rem 0;
+    }
+
+    #TOC h2 {
+      margin-top: 0;
+      font-size: 1.5rem;
+    }
+
+    #TOC ul {
+      list-style: none;
+      padding-left: 1.25rem;
+    }
+
+    #TOC > ul {
+      padding-left: 0;
+    }
+
+    #TOC li {
+      margin: 0.4rem 0;
+    }
+
+    #TOC a {
+      color: #495057;
+    }
+
+    #TOC a:hover {
+      color: #0066cc;
+    }
+
+    /* Syntax highlighting */
+    code span.al { color: #ff0000; font-weight: bold; }
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; }
+    code span.at { color: #7d9029; }
+    code span.bn { color: #40a070; }
+    code span.bu { color: #008000; }
+    code span.cf { color: #007020; font-weight: bold; }
+    code span.ch { color: #4070a0; }
+    code span.cn { color: #880000; }
+    code span.co { color: #60a0b0; font-style: italic; }
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; }
+    code span.do { color: #ba2121; font-style: italic; }
+    code span.dt { color: #902000; }
+    code span.dv { color: #40a070; }
+    code span.er { color: #ff0000; font-weight: bold; }
+    code span.fl { color: #40a070; }
+    code span.fu { color: #06287e; }
+    code span.im { color: #008000; font-weight: bold; }
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; }
+    code span.kw { color: #007020; font-weight: bold; }
+    code span.op { color: #666666; }
+    code span.ot { color: #007020; }
+    code span.pp { color: #bc7a00; }
+    code span.sc { color: #4070a0; }
+    code span.ss { color: #bb6688; }
+    code span.st { color: #4070a0; }
+    code span.va { color: #19177c; }
+    code span.vs { color: #4070a0; }
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; }
+
+    /* Citations */
+    div.csl-bib-body { }
+    div.csl-entry { clear: both; margin-bottom: 0.5rem; }
+    .hanging-indent div.csl-entry { margin-left: 2em; text-indent: -2em; }
+    div.csl-left-margin { min-width: 2em; float: left; }
+    div.csl-right-inline { margin-left: 2em; padding-left: 1em; }
+
+    /* Print styles */
+    @media print {
+      body {
+        max-width: none;
+        margin: 0;
+        padding: 1rem;
+        font-size: 11pt;
+      }
+
+      .title-page, .copyright-page {
+        page-break-after: always;
+      }
+
+      .callout {
+        break-inside: avoid;
+        box-shadow: none;
+      }
+
+      pre {
+        break-inside: avoid;
+      }
+
+      h1, h2, h3, h4 {
+        break-after: avoid;
+      }
+    }
+
+    /* Responsive design */
+    @media (max-width: 768px) {
+      html {
+        font-size: 16px;
+      }
+
+      body {
+        padding: 1.5rem 1rem;
+      }
+
+      .title-page {
+        padding: 2rem 0;
+      }
+
+      .title-page h1 {
+        font-size: 2rem;
+      }
+
+      h1 { font-size: 1.75rem; }
+      h2 { font-size: 1.5rem; }
+      h3 { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+<!-- Title Page -->
+<div class="title-page">
+  <h1>$title$</h1>
+$if(subtitle)$
+  <p class="subtitle">$subtitle$</p>
+$endif$
+$for(author)$
+  <p class="author">$author$</p>
+$endfor$
+$if(publisher)$
+  <p class="publisher">$publisher$</p>
+$endif$
+</div>
+
+<!-- Copyright Page -->
+<div class="copyright-page">
+$if(edition)$
+  <p class="edition">$edition$</p>
+$endif$
+$if(copyright)$
+  <p class="copyright">$copyright$</p>
+$endif$
+$if(publisher)$
+  <p>Published by $publisher$</p>
+$endif$
+$if(license)$
+  <p class="license">$license$</p>
+$endif$
+$if(disclaimer)$
+  <p class="disclaimer">$disclaimer$</p>
+$endif$
+</div>
+
+$if(toc)$
+<nav id="TOC" role="doc-toc">
+$if(toc-title)$
+<h2 id="toc-title">$toc-title$</h2>
+$endif$
+$table-of-contents$
+</nav>
+$endif$
+
+$body$
+
+</body>
+</html>

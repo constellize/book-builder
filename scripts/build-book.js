@@ -543,14 +543,21 @@ class BookBuilder {
       // Include metadata file for version, copyright, disclaimer
       const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
       pandocArgs.push(`--metadata-file="${metadataPath}"`);
+      // EPUB CSS for styling
+      const epubCssPath = path.resolve(this.toolsDir, 'styles/epub.css');
+      if (await fs.pathExists(epubCssPath)) {
+        pandocArgs.push(`--css="${epubCssPath}"`);
+      }
 
     } else {
       // HTML-specific settings
       pandocArgs.push("--standalone");
       pandocArgs.push("--toc");
-      pandocArgs.push(
-        `--css=${path.resolve(this.toolsDir, "styles/book.css")}`
-      );
+      // Use custom HTML template with embedded CSS
+      const htmlTemplatePath = path.resolve(this.toolsDir, 'templates/book-template.html5');
+      pandocArgs.push(`--template="${htmlTemplatePath}"`);
+      // Embed images as base64 data URIs
+      pandocArgs.push("--embed-resources");
       // Include metadata file for version, copyright, disclaimer
       const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
       pandocArgs.push(`--metadata-file="${metadataPath}"`);
