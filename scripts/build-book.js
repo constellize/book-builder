@@ -540,9 +540,10 @@ class BookBuilder {
       // EPUB-specific settings
       pandocArgs.push("--standalone");
       pandocArgs.push("--toc");
-      pandocArgs.push(`--metadata title="${config.book.title}"`);
-      pandocArgs.push(`--metadata author="${config.book.author}"`);
-      
+      // Include metadata file for version, copyright, disclaimer
+      const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
+      pandocArgs.push(`--metadata-file="${metadataPath}"`);
+
     } else {
       // HTML-specific settings
       pandocArgs.push("--standalone");
@@ -550,8 +551,9 @@ class BookBuilder {
       pandocArgs.push(
         `--css=${path.resolve(this.toolsDir, "styles/book.css")}`
       );
-      pandocArgs.push(`--metadata title="${config.book.title}"`);
-      pandocArgs.push(`--metadata author="${config.book.author}"`);
+      // Include metadata file for version, copyright, disclaimer
+      const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
+      pandocArgs.push(`--metadata-file="${metadataPath}"`);
 
       // Add filters for HTML
       for (const filter of config.pandoc.filters) {
