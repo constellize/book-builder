@@ -345,19 +345,8 @@ class BookBuilder {
         `ch${chapterNum}.png`
       );
 
-      // For PDF, Pandoc runs from root dir, so we need build/assets/images path
-      // For HTML, use relative path from output HTML to build/assets
-      // Remove alt text to avoid captions
-      const outputConfig = config.outputs[this.options.target];
-      const isPdfTarget = outputConfig && outputConfig.format === 'pdf';
-      
-      if (isPdfTarget) {
-        // PDF: Pandoc runs from root, processes build/intermediate/*.md, needs build/assets/images
-        imageMarkdown = `\n![](build/assets/images/chapters/ch${chapterNum}.png)\n`;
-      } else {
-        // HTML output is in build/development/ or build/web/, so path to build/assets is ../assets
-        imageMarkdown = `\n![](../assets/images/chapters/ch${chapterNum}.png)\n`;
-      }
+      // Pandoc runs from book root for all formats, use build/assets/images path
+      imageMarkdown = `\n![](build/assets/images/chapters/ch${chapterNum}.png)\n`;
       logMessage = `  Added chapter image for ch${chapterNum}`;
     }
 
@@ -372,15 +361,8 @@ class BookBuilder {
         `app${appendixLetter}.png`
       );
 
-      // Same logic for appendices - remove alt text to avoid captions
-      const outputConfig = config.outputs[this.options.target];
-      const isPdfTarget = outputConfig && outputConfig.format === 'pdf';
-      
-      if (isPdfTarget) {
-        imageMarkdown = `\n![](build/assets/images/appendices/app${appendixLetter}.png)\n`;
-      } else {
-        imageMarkdown = `\n![](../assets/images/appendices/app${appendixLetter}.png)\n`;
-      }
+      // Pandoc runs from book root for all formats, use build/assets/images path
+      imageMarkdown = `\n![](build/assets/images/appendices/app${appendixLetter}.png)\n`;
       logMessage = `  Added appendix image for app${appendixLetter}`;
     }
 
@@ -428,17 +410,9 @@ class BookBuilder {
     const siteBaseUrl = outputConfig.siteBaseUrl || config.repository.siteBaseUrl;
     content = content.replace(/{SITE_BASE}/g, siteBaseUrl);
 
-    // Transform inline image paths based on output format
-    // Convert images/... paths to build/assets/images/... for PDF or ../assets/images/... for HTML
-    const isPdfTarget = outputConfig && outputConfig.format === 'pdf';
-    
-    if (isPdfTarget) {
-      // PDF: Pandoc runs from root, needs build/assets/images path
-      content = content.replace(/\(images\//g, '(build/assets/images/');
-    } else {
-      // HTML: Output is in build/{target}/, needs ../assets/images path
-      content = content.replace(/\(images\//g, '(../assets/images/');
-    }
+    // Transform inline image paths to absolute build path
+    // Pandoc always runs from book root, so use build/assets/images/ for all formats
+    content = content.replace(/\(images\//g, '(build/assets/images/');
 
     return content;
   }
