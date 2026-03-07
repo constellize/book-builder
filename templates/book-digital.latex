@@ -314,6 +314,11 @@ $endif$
 $if(license)$
 $license$
 $endif$
+
+$if(disclaimer)$
+\vspace{1em}
+\textit{$disclaimer$}
+$endif$
 \end{center}
 \vspace*{\fill}
 \clearpage

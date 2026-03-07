@@ -39,14 +39,19 @@ book:
     - "Teams and Knowledge Stewardship"
     - "The Future of Knowledge-Driven Development"
   appendices:
-    - "CodePromptu Implementation Guide"
-    - "Tool Recommendations"
-    - "Further Reading"
-    - "Glossary"
+    - "Constellize Method Summary"
+    - "A Manifesto for Constellize"
+  online_resources:
+    - "Prompts & Templates (https://constellize.com/book/prompts)"
+    - "Implementation Guide (https://constellize.com/book/implementation)"
+    - "Project Structure Reference (https://constellize.com/book/project-structure)"
+    - "Measuring Impact & ROI (https://constellize.com/book/metrics)"
+    - "CodePromptu Implementation (https://github.com/constellize/codepromptu)"
 
 # Copyright and legal
-copyright: "© 2025 Steve Atkinson. All rights reserved."
+copyright: "© 2025-2026 Steve Atkinson. All rights reserved."
 license: "All rights reserved. No part of this publication may be reproduced, distributed, or transmitted in any form or by any means, including photocopying, recording, or other electronic or mechanical methods, without the prior written permission of the publisher."
+disclaimer: "This work is the sole independent work of Steve Atkinson and Constellize Press. The views and opinions expressed in this book are those of the author and do not reflect the views, policies, or positions of any employer, organization, or entity with which the author may be affiliated."
 
 # ISBN and publishing details
 isbn: ""  # To be filled when available
@@ -70,9 +75,19 @@ lof: false  # List of figures
 link-citations: true
 reference-section-title: "References"
 
+# pandoc-crossref settings for section references
+secPrefix: "Section"
+linkReferences: true
+nameInLink: true
+codeBlockCaptions: false
+
+# Fix minted/pandoc-crossref \listoflistings conflict
+header-includes: |
+  \let\listoflistings\relax
+
 # Code highlighting
 highlight-style: "github"
-listings: true
+listings: false
 
 # Custom variables for template
 book-style: true
