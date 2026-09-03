@@ -89,6 +89,51 @@ pre code {
   padding: 0;
 }
 
+/* --- Long code lines must wrap in EPUB ------------------------------------
+ * Pandoc injects its own highlighting CSS inline into every XHTML file, and it
+ * beats the rules above on specificity: `pre > code.sourceCode` is (0,1,2)
+ * against our `pre` at (0,0,1), so `white-space: pre` wins and nothing wraps.
+ *
+ * Pandoc already ships the correct fix - but only inside `@media print`:
+ *     @media print { pre > code.sourceCode        { white-space: pre-wrap; }
+ *                    pre > code.sourceCode > span { text-indent: -5em;
+ *                                                   padding-left: 5em; } }
+ * E-readers render as `screen`, so they never get it. For screen pandoc emits
+ * `@media screen { div.sourceCode { overflow: auto; } }`, which means a
+ * scrollbar in a browser - but a paginated e-reader cannot scroll, so the line
+ * simply runs off the page and is clipped. The longest line in this book is 108
+ * characters (ch6, CustomRedisHealthIndicator), which overflows every
+ * phone-sized reader.
+ *
+ * So: apply pandoc's own print treatment to every medium. Selectors below match
+ * pandoc's specificity exactly so they win on source order (our stylesheet is
+ * linked after the inline <style> block).
+ */
+pre > code.sourceCode {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-wrap: break-word; /* legacy readers */
+  word-break: break-word;
+}
+
+/* Hanging indent so a wrapped continuation is visibly a continuation and not
+ * mistaken for a new statement. This is pandoc's own print rule. The spans stay
+ * inline-block (pandoc sets that per line); an inline-block still wraps
+ * internally once its parent allows wrapping. */
+pre > code.sourceCode > span {
+  text-indent: -5em;
+  padding-left: 5em;
+  max-width: 100%;
+}
+
+/* Pandoc sets `.sourceCode { overflow: visible; }` plus an @media screen rule
+ * putting `overflow: auto` on div.sourceCode. Neither helps a paginated reader;
+ * with wrapping enabled above there is nothing left to overflow. */
+div.sourceCode {
+  overflow: visible;
+  max-width: 100%;
+}
+
 /* Links */
 a {
   color: #0066cc;
