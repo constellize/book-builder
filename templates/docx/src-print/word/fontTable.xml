@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:fonts xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:font w:name="Aptos">
+    <w:panose1 w:val="020B0004020202020204"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="swiss"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="20000287" w:usb1="00000003" w:usb2="00000000" w:usb3="00000000" w:csb0="0000019F" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Times New Roman">
+    <w:panose1 w:val="02020603050405020304"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="roman"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="E0002EFF" w:usb1="C000785B" w:usb2="00000009" w:usb3="00000000" w:csb0="000001FF" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Aptos Display">
+    <w:panose1 w:val="020B0004020202020204"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="swiss"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="20000287" w:usb1="00000003" w:usb2="00000000" w:usb3="00000000" w:csb0="0000019F" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Cambria Math">
+    <w:panose1 w:val="02040503050406030204"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="roman"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="E00002FF" w:usb1="420024FF" w:usb2="00000000" w:usb3="00000000" w:csb0="0000019F" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Courier New">
+    <w:panose1 w:val="02070309020205020404"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="modern"/>
+    <w:pitch w:val="fixed"/>
+    <w:sig w:usb0="E0002AFF" w:usb1="C0007843" w:usb2="00000009" w:usb3="00000000" w:csb0="000001FF" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Cambria">
+    <w:panose1 w:val="02040503050406030204"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="roman"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="E00002FF" w:usb1="400004FF" w:usb2="00000000" w:usb3="00000000" w:csb0="0000019F" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Calibri">
+    <w:panose1 w:val="020F0502020204030204"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="swiss"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="E0002AFF" w:usb1="C000247B" w:usb2="00000009" w:usb3="00000000" w:csb0="000001FF" w:csb1="00000000"/>
+  </w:font>
+  <w:font w:name="Atkinson Hyperlegible Next">
+    <w:panose1 w:val="00000000000000000000"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="auto"/>
+    <w:pitch w:val="variable"/>
+    <w:sig w:usb0="A000006F" w:usb1="0000600A" w:usb2="00000000" w:usb3="00000000" w:csb0="20000093" w:csb1="00000000"/>
+    <w:embedRegular r:id="rId1000" w:fontKey="{D93A15D2-7640-4CA5-BB76-EE84C5E7E0E1}"/>
+    <w:embedBold r:id="rId1001" w:fontKey="{31774B20-A109-432E-A8FC-7BD3EF24FDD1}"/>
+    <w:embedItalic r:id="rId1002" w:fontKey="{9B19B75B-49C1-4A27-BE6A-E147313F127B}"/>
+    <w:embedBoldItalic r:id="rId1003" w:fontKey="{008F5D04-EA17-49A4-A62A-4DCB64E5440C}"/>
+  </w:font>
+  <w:font w:name="Atkinson Hyperlegible Mono">
+    <w:panose1 w:val="00000000000000000000"/>
+    <w:charset w:val="00"/>
+    <w:family w:val="modern"/>
+    <w:pitch w:val="fixed"/>
+    <w:sig w:usb0="A000006F" w:usb1="0000600A" w:usb2="00000000" w:usb3="00000000" w:csb0="20000093" w:csb1="00000000"/>
+    <w:embedRegular r:id="rId1004" w:fontKey="{3FC0B4BC-A760-4312-86D1-844AF65F74EE}"/>
+    <w:embedBold r:id="rId1005" w:fontKey="{4FB63DE4-C7EF-4A13-AE52-EE0BC8F1C750}"/>
+    <w:embedItalic r:id="rId1006" w:fontKey="{F417B53D-2EE5-49E6-B265-DD28417CE403}"/>
+    <w:embedBoldItalic r:id="rId1007" w:fontKey="{E201B029-FA93-4F2E-96E4-97EE4ED02840}"/>
+  </w:font>
+</w:fonts>

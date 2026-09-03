@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1000" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.odttf"/>
+  <Relationship Id="rId1001" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font2.odttf"/>
+  <Relationship Id="rId1002" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font3.odttf"/>
+  <Relationship Id="rId1003" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font4.odttf"/>
+  <Relationship Id="rId1004" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font5.odttf"/>
+  <Relationship Id="rId1005" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font6.odttf"/>
+  <Relationship Id="rId1006" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font7.odttf"/>
+  <Relationship Id="rId1007" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font8.odttf"/>
+</Relationships>

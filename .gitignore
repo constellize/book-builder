@@ -43,3 +43,8 @@ coverage/
 fonts/AppleColorEmoji.ttf
 fonts/Apple Color Emoji.ttf
 .venv/
+
+# Embedded font parts inside the reference.docx source trees are DERIVED:
+# build-reference-docx.js regenerates them by ODTTF-obfuscating fonts/*.ttf,
+# which are tracked. The XML alongside them is the diffable source of truth.
+templates/docx/src-*/word/fonts/*.odttf
