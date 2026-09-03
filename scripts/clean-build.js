@@ -23,13 +23,50 @@ async function clean() {
   const buildDir = path.resolve(rootDir, 'build');
 
   try {
-    // Remove build directory
+    // Remove ONLY build-owned artefacts - never the build/ tree itself.
+    //
+    // This used to be `fs.remove(buildDir)`. build/ also holds files no target
+    // regenerates: build/print/constellize-book-print-preview-2026.01.pdf is a
+    // hand-made 2026-01-03 artefact, and `make book-build` calls this script
+    // before building, so a blunt wipe destroyed it silently and unrecoverably.
+    // BookBuilder.cleanBuild() already scopes itself this way; this script is the
+    // path that did not.
+    //
+    // Owned = the output file each configured target produces, plus intermediate/
+    // and assets/, which are pure scratch refreshed on every build.
     if (await fs.pathExists(buildDir)) {
-      if (DRY_RUN) {
-        console.log(chalk.yellow(`would remove directory: ${buildDir}`));
-      } else {
-        await fs.remove(buildDir);
-        console.log(chalk.green('Removed build directory'));
+      const owned = new Set();
+      for (const [name, out] of Object.entries(config.outputs || {})) {
+        const dir = path.resolve(rootDir, out.directory);
+        const ext = { pdf: '.pdf', html5: '.html', epub3: '.epub', docx: '.docx' }[out.format] || '.html';
+        owned.add(path.join(dir, `constellize-book${ext}`));
+      }
+      owned.add(path.join(buildDir, 'intermediate'));
+      owned.add(path.join(buildDir, 'assets'));
+
+      for (const target of owned) {
+        if (!(await fs.pathExists(target))) continue;
+        if (DRY_RUN) {
+          console.log(chalk.yellow(`would remove: ${target}`));
+        } else {
+          await fs.remove(target);
+          console.log(chalk.green(`Removed ${path.relative(rootDir, target)}`));
+        }
+      }
+
+      // Anything else under build/ is not ours. Say so rather than deleting it.
+      // Exclude the owned set itself, and anything nested inside an owned
+      // directory (intermediate/, assets/) - those are going away with it.
+      const isOwned = (f) =>
+        [...owned].some((o) => f === o || f.startsWith(o + path.sep));
+      const survivors = glob
+        .sync('**/*', { cwd: buildDir, absolute: true, nodir: true })
+        .filter((f) => !path.basename(f).startsWith('.'))
+        .filter((f) => !isOwned(f));
+      if (survivors.length > 0) {
+        console.log(chalk.gray(`Left untouched (not build-owned): ${survivors
+          .map((f) => path.relative(buildDir, f))
+          .join(', ')}`));
       }
     } else {
       console.log(chalk.gray('Build directory does not exist'));

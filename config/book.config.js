@@ -21,6 +21,20 @@ const CALLOUT_FILTER_HTML = {
 
 const LINK_FILTER = 'book-builder/templates/filters/link-filter.lua';
 
+// Callout filters for the docx writer. These are NOT interchangeable with the LaTeX or
+// HTML ones: the docx writer drops raw LaTeX silently and renders raw HTML as nothing,
+// so a callout filter that emits either produces a .docx that opens cleanly with the
+// callout bodies simply missing. The docx filters emit raw OpenXML `<w:tbl>` boxes
+// instead - 156 of them, which is what verify-docx.js counts.
+//
+// Plain strings, not { anyOf: [...] } - there is no acceptable fallback. If the docx
+// callout filter is missing the build MUST stop, because every alternative filter fails
+// silently for this writer.
+const CALLOUT_FILTER_DOCX_DIGITAL =
+  'book-builder/templates/filters/callout-filter-docx-digital.lua';
+const CALLOUT_FILTER_DOCX_PRINT =
+  'book-builder/templates/filters/callout-filter-docx-print.lua';
+
 module.exports = {
   // Book metadata
   book: {
@@ -136,6 +150,52 @@ module.exports = {
       format: 'epub3',
       standalone: true
     },
+
+    // Word (.docx) targets.
+    //
+    // Every key below is MANDATORY, not optional-with-a-default:
+    //   - `directory` is dereferenced without a guard by createBuildDirectories() and
+    //     cleanBuild().
+    //   - `codepromptuRepoBaseUrl` / `siteBaseUrl` are dereferenced without a guard by
+    //     processRepositoryLinks(); omitting them leaves literal {SITE_BASE} placeholders
+    //     in the prose and costs ~67 prompt hyperlinks.
+    //   - `format: 'docx'` is what selects the docx branch in generateBook() and the
+    //     ".docx" case in getOutputPath(). Any other value silently produces an .html
+    //     file with docx bytes in it, or a docx run through the HTML template.
+    //   - `referenceDoc` supplies --reference-doc: styles, the embedded Atkinson faces,
+    //     page geometry. Without it pandoc uses its built-in reference doc and the
+    //     result is a Calibri document with none of the callout or code styles the Lua
+    //     filters reference by name.
+    //   - `defaultsFile` supplies the reader extension string, toc and number-sections.
+    //     It must be the docx one; the LaTeX defaults carry pdf-engine keys.
+    //
+    // digital and print differ ONLY in their reference doc (Hyperlink style) and their
+    // callout filter. They write to SEPARATE directories so `--target all` cannot have
+    // one overwrite the other.
+    'docx-digital': {
+      directory: './build/docx-digital',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
+      format: 'docx',
+      dpi: 300,
+      standalone: true,
+      // Consumed by generateBook() -> --reference-doc, and by docx-postprocess.js via
+      // `docxVariant` below (which selects the matching entry in config/docx-styles.js).
+      referenceDoc: 'book-builder/templates/docx/reference-digital.docx',
+      docxVariant: 'digital',
+      defaultsFile: 'book-builder/config/pandoc-defaults-docx-digital.yaml'
+    },
+    'docx-print': {
+      directory: './build/docx-print',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
+      format: 'docx',
+      dpi: 300,
+      standalone: true,
+      referenceDoc: 'book-builder/templates/docx/reference-print.docx',
+      docxVariant: 'print',
+      defaultsFile: 'book-builder/config/pandoc-defaults-docx-print.yaml'
+    },
     // Alias for 'digital'. It writes to the SAME directory as 'digital', so it must
     // produce the same artefact - hence it repeats digital's defaultsFile rather than
     // falling back to pandoc.defaultsFile (which declares a different filter chain and
@@ -155,10 +215,18 @@ module.exports = {
   },
 
   // Targets built by `--target all` / `npm run build:all`.
-  // Must cover every artefact that publish:website copies, which includes
-  // build/print/constellize-book.pdf. The 'pdf' alias is excluded because it writes to
-  // build/digital and would just rebuild the same file twice.
-  allTargets: ['digital', 'print', 'web', 'development', 'epub'],
+  // Must cover every artefact that publish-to-website.sh copies: both PDFs, the web
+  // HTML, the EPUB and both .docx manuscripts. The 'pdf' alias is excluded because it
+  // writes to build/digital and would just rebuild the same file twice.
+  allTargets: [
+    'digital',
+    'print',
+    'web',
+    'development',
+    'epub',
+    'docx-digital',
+    'docx-print'
+  ],
 
   // Pandoc configuration
   pandoc: {
@@ -178,6 +246,10 @@ module.exports = {
       web: 'book-builder/templates/book-template.html5',
       development: 'book-builder/templates/book-template.html5'
       // epub: pandoc's built-in epub3 template
+      // docx-digital / docx-print: DELIBERATELY ABSENT. The docx writer has no template
+      // mechanism - its equivalent is --reference-doc, declared per target in `outputs`
+      // above. Adding an entry here would make generateBook() pass --template to a docx
+      // build, which pandoc rejects outright.
     },
 
     // Lua filters, resolved per target. Every target MUST have an entry; an unlisted
@@ -193,7 +265,18 @@ module.exports = {
       pdf: [],
       web: [CALLOUT_FILTER_HTML, LINK_FILTER],
       development: [CALLOUT_FILTER_HTML, LINK_FILTER],
-      epub: [CALLOUT_FILTER_HTML, LINK_FILTER]
+      epub: [CALLOUT_FILTER_HTML, LINK_FILTER],
+
+      // The docx targets DO declare their filters here rather than in their defaults
+      // files, unlike the PDF targets. generateBook() emits, in command-line order,
+      //   --filter=pandoc-crossref --citeproc --lua-filter=callout --lua-filter=link
+      // and pandoc honours that order, so citations resolve and the #refs div is filled
+      // before the callout filter turns callout bodies into tables the later filters
+      // can no longer see into. Putting citeproc in the defaults file instead risks the
+      // top-level-`citeproc:` mistake that silently reverted all 28 citations to literal
+      // "[@key]" text in the digital PDF.
+      'docx-digital': [CALLOUT_FILTER_DOCX_DIGITAL, LINK_FILTER],
+      'docx-print': [CALLOUT_FILTER_DOCX_PRINT, LINK_FILTER]
     },
 
     metadata: 'book-builder/templates/metadata.yaml'
@@ -215,7 +298,9 @@ module.exports = {
       pdf: 'chicago',
       web: 'chicago',
       development: 'chicago',
-      epub: 'chicago'
+      epub: 'chicago',
+      'docx-digital': 'chicago',
+      'docx-print': 'chicago'
     }
   },
 

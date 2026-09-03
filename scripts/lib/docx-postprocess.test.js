@@ -58,6 +58,7 @@ const BODY_SECTPR = `<w:sectPr>
       <w:headerReference r:id="rId903" w:type="first" />
       <w:footerReference r:id="rId904" w:type="default" />
       <w:footerReference r:id="rId905" w:type="even" />
+      <w:footerReference r:id="rId906" w:type="first" />
       <w:footnotePr><w:numRestart w:val="eachSect" /></w:footnotePr>
       <w:type w:val="oddPage" />
       <w:pgSz w:h="15840" w:w="12240" />
@@ -112,6 +113,10 @@ test('every emitted sectPr repeats the full page setup and the r:ids', () => {
     'r:id="rId903"',
     'r:id="rId904"',
     'r:id="rId905"',
+    // The `first` footer. Without it in the CLONE, chapter 1 would get a folio
+    // on its opening page and chapters 2..N would not — the exact asymmetry
+    // that makes a cloned-sectPr bug look like a one-off typographic glitch.
+    'r:id="rId906"',
     'w:w="12240"',
     'w:h="15840"',
     'w:gutter="288"',
@@ -204,8 +209,19 @@ test('guards fire loudly instead of inventing geometry', () => {
         doc(heading('a', 'A')).replace(/<w:headerReference[^>]*\/>/g, ''),
         spec
       ),
-    /declares no <w:headerReference>/,
+    /missing <w:headerReference w:type="default">.*<w:headerReference w:type="first">/,
     'missing running heads'
+  );
+  throws(
+    () =>
+      pp.insertChapterSections(
+        // Exactly the pre-fix state: a blank `first` header and no `first`
+        // footer, so every chapter opening loses its page number silently.
+        doc(heading('a', 'A')).replace(/<w:footerReference[^>]*w:type="first"[^>]*\/>/, ''),
+        spec
+      ),
+    /missing <w:footerReference w:type="first">/,
+    'missing chapter-opening folio'
   );
   throws(
     () => pp.insertChapterSections(doc(heading('a', 'A')).replace('12240', '9360'), spec),

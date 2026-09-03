@@ -5,13 +5,85 @@
  *
  * Two engines, both empirically verified prompt-free on macOS:
  *
- *   libreoffice  headless, unsandboxed, ~0.8 s warm. The default, and the only
- *                engine usable in CI. Does NOT update field results, so a
+ *   libreoffice  headless, unsandboxed, ~1.0 s warm. Fast, prompt-free and the
+ *                only engine usable in CI. Does NOT update field results, so a
  *                document whose TOC is a live { TOC } field renders with an
- *                empty TOC (measured: 0 dot-leader lines vs Word's 7).
+ *                empty TOC (measured: 0 dot-leader lines vs Word's 7). And it
+ *                does NOT honour open-right section breaks -- see below.
  *
  *   word         the fidelity reference, ~1.5-2 s. Prompt-free only via the
- *                two defences below. Produces a correct, repaginated TOC.
+ *                two defences below. Produces a correct, repaginated TOC and
+ *                the correct implicit blank versos.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE ENGINE IS CHOSEN FOR YOU BY DEFAULT ("auto")
+ * ---------------------------------------------------------------------------
+ *
+ * LibreOffice DROPS the implicit blank verso that a `w:type="oddPage"` section
+ * break requires. Word inserts it; LibreOffice starts the next section on the
+ * next physical sheet whatever its parity. Measured on a six-chapter document
+ * carrying six paragraph-level oddPage sections (the shape
+ * scripts/lib/docx-postprocess.js produces):
+ *
+ *     engine       pages  blank versos  chapter openers land on
+ *     LibreOffice     25             0  physical 2, 7, 10, 16, 18, 23
+ *     Word            29             4  physical 3, 9, 13, 19, 21, 27
+ *
+ * Word puts every chapter on a recto. LibreOffice put four of six on a VERSO.
+ * The damage is not confined to the openers: from the first dropped blank
+ * onward every physical sheet has the wrong parity, so the mirrored margins bind
+ * on the wrong edge and the running heads swap sides. Measured directly:
+ * LibreOffice's physical page 2 -- a verso -- carries the RECTO header layout
+ * (title left / folio right), and prints folio "3" on the second sheet.
+ *
+ * The logical numbering stays correct throughout, which is exactly what makes
+ * this dangerous: the .docx is right in Word's model, and nothing about the
+ * LibreOffice PDF announces that it is not a print proof.
+ *
+ * So `--engine auto` (the default) reads word/document.xml and picks Word when
+ * the document declares mid-document open-right breaks, LibreOffice otherwise.
+ * `--engine libreoffice` still works and is still the CI engine -- it just says
+ * loudly, on such a document, that its output is not a print proof.
+ *
+ * The discriminator is `docxLayoutInfo()`: paragraph-level `<w:sectPr>` elements
+ * whose `w:type` is oddPage or evenPage. It is deliberately NOT a filename
+ * heuristic -- reference-digital.docx is openright with a binding gutter too, so
+ * "print" in the name is neither necessary nor sufficient. It is also why a bare
+ * reference doc (one body-level sectPr, no mid-document break, so no implicit
+ * blank is ever possible) still renders on LibreOffice: measured 0 such
+ * paragraph-level breaks in reference-{digital,print}.docx, 6 in a built book.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT A WORD RUN LEAVES ON THE MACHINE (it is not nothing)
+ * ---------------------------------------------------------------------------
+ *
+ * The "update automatic links at open" preference is genuinely restored -- it is
+ * journalled before the flip and put back in a `finally`, and 3/3 runs left it
+ * ON as found.
+ *
+ * But rendering opens a real Word window, and Word remembers where it was:
+ *
+ *     defaults read com.microsoft.Word \
+ *       "NSWindow Frame WDDocumentWindowFrameNameDefault"
+ *
+ * moves. Measured: seeded with "100 100 800 600 0 0 1920 1050", one render left
+ * "394 421 800 600 0 0 1920 1050". Nothing else under com.microsoft.Word changed
+ * across three runs (`defaults read com.microsoft.Word` diffed clean otherwise).
+ * This is cosmetic -- remembered document-window geometry -- but the claim "the
+ * run leaves the machine untouched" is false, and is not made anywhere now.
+ *
+ * ---------------------------------------------------------------------------
+ * WORD PDFs ARE NOT BYTE-REPRODUCIBLE
+ * ---------------------------------------------------------------------------
+ *
+ * Same input, same Word, same everything: SIZE-identical, byte-DIFFERENT.
+ * Measured over three consecutive renders of reference-print.docx -- 83911 bytes
+ * every time, three different md5s, 64 differing bytes at two sites:
+ * /CreationDate + /ModDate (offsets ~5896-6009) and the trailer /ID (~83816).
+ *
+ * A CI check written against byte-identity WILL flap. Compare
+ * `pdfTextFingerprint()` instead: page count plus a sha256 of the extracted
+ * text, which was identical across all three of those runs.
  *
  * ---------------------------------------------------------------------------
  * THE TWO WORD PROMPTS, AND WHY THE DEFENCES ARE SHAPED THIS WAY
@@ -82,7 +154,10 @@ const { spawnSync } = require('child_process');
 const SOFFICE =
   process.env.BOOK_BUILDER_SOFFICE || '/Applications/LibreOffice.app/Contents/MacOS/soffice';
 
-const WORD_APP = '/Applications/Microsoft Word.app';
+// Overridable for the same reason SOFFICE is, plus one more: it is the only way
+// to exercise the "auto wanted Word, Word is not installed" degradation path on
+// a machine that HAS Word. Point it at a nonexistent path to simulate CI.
+const WORD_APP = process.env.BOOK_BUILDER_WORD_APP || '/Applications/Microsoft Word.app';
 const WORD_CONTAINER = path.join(
   os.homedir(),
   'Library/Containers/com.microsoft.Word/Data/Documents'
@@ -175,6 +250,133 @@ function docxFieldInfo(docxPath) {
     hasFields: /<w:(fldChar|instrText|fldSimple)/.test(xml),
     hasToc: /TOC\s+\\/.test(xml) || /w:instrText[^>]*>\s*TOC/.test(xml),
   };
+}
+
+/** A `<w:sectPr>` that is the last child of a `<w:pPr>` -- i.e. a real break. */
+const PARA_SECTPR_RE = /<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>\s*<\/w:pPr>/g;
+
+/**
+ * Is this document print-facing, and does it depend on implicit blank versos?
+ *
+ * `openRightBreaks` is the number the engine choice turns on: paragraph-level
+ * section breaks whose `w:type` is oddPage or evenPage. Each one is a place
+ * where Word may insert a blank page that LibreOffice will not.
+ *
+ * The BODY-level sectPr is excluded on purpose. Its oddPage fires once, at
+ * document start, where no implicit blank is possible -- so a bare
+ * reference-*.docx (measured: 1 sectPr, 0 paragraph-level) is safe on
+ * LibreOffice, while a built book (measured: 7 sectPr, 6 paragraph-level) is
+ * not. Matching on `</w:sectPr></w:pPr>` rather than "every match except the
+ * last" keeps that true even for a document that ends without a body sectPr.
+ *
+ * @param {string} docxPath
+ * @returns {{readable: boolean, sections: number, openRightBreaks: number,
+ *            sectionTypes: string[], mirrorMargins: boolean, gutter: number,
+ *            needsWord: boolean}}
+ */
+function docxLayoutInfo(docxPath) {
+  const empty = {
+    readable: false,
+    sections: 0,
+    openRightBreaks: 0,
+    sectionTypes: [],
+    mirrorMargins: false,
+    gutter: 0,
+    needsWord: false,
+  };
+
+  const doc = run('/usr/bin/unzip', ['-p', docxPath, 'word/document.xml']);
+  if (doc.code !== 0) return empty;
+  const xml = doc.out;
+
+  const sections = (xml.match(/<w:sectPr\b/g) || []).length;
+
+  let openRightBreaks = 0;
+  const types = new Set();
+  for (const m of xml.matchAll(PARA_SECTPR_RE)) {
+    const t = /<w:type\b[^>]*w:val="([a-zA-Z]+)"/.exec(m[0]);
+    const val = t ? t[1] : 'nextPage';
+    types.add(val);
+    if (val === 'oddPage' || val === 'evenPage') openRightBreaks++;
+  }
+
+  const gutterMatch = /w:gutter="(\d+)"/.exec(xml);
+  const gutter = gutterMatch ? Number(gutterMatch[1]) : 0;
+
+  // Mirrored margins live in settings.xml, not document.xml. Absent settings.xml
+  // is not an error -- it only costs a word in the warning text.
+  const settings = run('/usr/bin/unzip', ['-p', docxPath, 'word/settings.xml']);
+  const mirrorMargins = settings.code === 0 && /<w:mirrorMargins\b/.test(settings.out);
+
+  return {
+    readable: true,
+    sections,
+    openRightBreaks,
+    sectionTypes: [...types].sort(),
+    mirrorMargins,
+    gutter,
+    needsWord: openRightBreaks > 0,
+  };
+}
+
+/** Is Word actually installed? `auto` must degrade, not fail, without it. */
+function wordAvailable() {
+  return fs.existsSync(WORD_APP);
+}
+
+/**
+ * Turn the requested engine into the list to run, and say why.
+ *
+ * This is the fix for "the default command produced a misleading print proof".
+ * The rules, in order:
+ *
+ *   auto + open-right document + Word present -> word          (correct proof)
+ *   auto + open-right document + no Word      -> libreoffice   + notProof warning
+ *   auto + anything else                      -> libreoffice   (fast path kept)
+ *   libreoffice + open-right document         -> libreoffice   + notProof warning
+ *   word / both                               -> as asked
+ *
+ * Nothing is ever refused and nothing exits non-zero for this: LibreOffice stays
+ * the CI engine, and a Linux box with no Word still renders. The guarantee is
+ * only that a LibreOffice render of an open-right document can never happen
+ * SILENTLY.
+ *
+ * @param {string} input path to the .docx
+ * @param {string} requested one of ENGINES
+ * @returns {{engines: string[], layout: object, requested: string,
+ *            reason: string|null, notProof: boolean, wordMissing: boolean}}
+ */
+function selectEngines(input, requested) {
+  const layout = docxLayoutInfo(input);
+  const out = {
+    engines: requested === 'both' ? ['libreoffice', 'word'] : [requested],
+    layout,
+    requested,
+    reason: null,
+    notProof: false,
+    wordMissing: false,
+  };
+
+  if (requested === 'auto') {
+    if (!layout.needsWord) {
+      out.engines = ['libreoffice'];
+      out.reason = layout.readable
+        ? 'no mid-document open-right breaks; LibreOffice cannot get parity wrong here'
+        : 'could not read word/document.xml; assuming the fast path';
+    } else if (wordAvailable()) {
+      out.engines = ['word'];
+      out.reason =
+        `${layout.openRightBreaks} open-right section breaks: only Word inserts the ` +
+        'implicit blank versos they need';
+    } else {
+      out.engines = ['libreoffice'];
+      out.wordMissing = true;
+      out.reason = 'this document needs Word for a valid proof, but Word is not installed';
+    }
+  }
+
+  out.notProof = layout.needsWord && out.engines.length === 1 && out.engines[0] === 'libreoffice';
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +609,52 @@ end tell
 }
 
 /**
+ * Sweep staged files abandoned by a run that was killed before its own cleanup.
+ *
+ * Measured consequence of NOT doing this: a run interrupted by SIGPIPE (piping
+ * this script into `head` is enough) left a `bb-<pid>-...docx` plus its `~$`
+ * owner file in the stage. Word then tried to recover them, and the next TWO
+ * Word renders failed with "Connection is invalid (-609)" and "missing value
+ * doesn't understand the repaginate message (-1708)" -- i.e. `document "<tag>"`
+ * resolved to nothing. Clearing the stage fixed it immediately. That matters
+ * more now than it did, because Word is the default engine for print documents.
+ *
+ * SAFE UNDER CONCURRENCY, which is the whole design constraint: a name is only
+ * removed when the pid embedded in its tag is dead and is not ours. A sibling
+ * render in another process is therefore never touched, however long it takes.
+ * Both spellings carry the pid -- `bb-<pid>-...` and Word's owner file
+ * `~$-<pid>-...` (the name with its first two characters dropped).
+ *
+ * @returns {number} how many entries were removed
+ */
+function sweepStaleStage() {
+  if (!fs.existsSync(WORD_STAGE)) return 0;
+  let removed = 0;
+  for (const name of fs.readdirSync(WORD_STAGE)) {
+    const m = /^(?:bb|~\$)-(\d+)-/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid) continue;
+    let alive;
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch (e) {
+      // EPERM means the pid exists but belongs to someone else: still alive.
+      alive = e.code === 'EPERM';
+    }
+    if (alive) continue;
+    try {
+      fs.removeSync(path.join(WORD_STAGE, name));
+      removed++;
+    } catch (e) {
+      /* a file we cannot remove is not worth failing a render over */
+    }
+  }
+  return removed;
+}
+
+/**
  * Convert with Microsoft Word. Prompt-free; see the file header for why each
  * step is here.
  *
@@ -453,6 +701,8 @@ function renderWord(input, output, opts = {}) {
   const willToggle = original === true && allowPrefToggle;
 
   fs.ensureDirSync(WORD_STAGE);
+  const swept = sweepStaleStage();
+  if (swept) notes.push({ kind: 'stage-swept', removed: swept });
   const t = tag();
   const stagedDocx = path.join(WORD_STAGE, `${t}.docx`);
   const stagedPdf = path.join(WORD_STAGE, `${t}.pdf`);
@@ -583,6 +833,63 @@ function rasterize(pdf, pngPath, opts = {}) {
  * Cheap facts about a PDF, for the --engine both comparison. Every probe is
  * optional: a missing poppler tool degrades the row, it does not fail the run.
  */
+/**
+ * 1-based indices of pages with no extractable text.
+ *
+ * This is the corroborating measurement for the engine-choice warning: an
+ * open-right document that renders with ZERO blank versos was almost certainly
+ * rendered by something that dropped them. Note the asymmetry -- blanks present
+ * proves the engine honoured the breaks; blanks absent does NOT prove failure,
+ * because a document may genuinely never need one. So it is reported as
+ * evidence alongside the engine name, never used as the sole detector.
+ *
+ * Returns null if pdftotext is unavailable, so callers degrade rather than lie.
+ *
+ * @param {string} pdf
+ * @returns {number[]|null}
+ */
+function pdfBlankPages(pdf) {
+  if (!have('pdftotext') || !have('pdfinfo')) return null;
+  const n = run('pdfinfo', [pdf], { timeoutMs: 30000 }).out.match(/^Pages:\s+(\d+)/m);
+  if (!n) return null;
+  const pages = parseInt(n[1], 10);
+  const blanks = [];
+  for (let p = 1; p <= pages; p++) {
+    const r = run('pdftotext', ['-f', String(p), '-l', String(p), pdf, '-'], { timeoutMs: 30000 });
+    if (r.code !== 0) return null;
+    // \f is pdftotext's page separator and is present even on an empty page.
+    if (r.out.replace(/[\s\f]/g, '') === '') blanks.push(p);
+  }
+  return blanks;
+}
+
+/**
+ * The reproducibility check that does NOT flap.
+ *
+ * Word PDFs are size-identical but never byte-identical across runs: measured 64
+ * differing bytes over three renders of the same file, all of them /CreationDate,
+ * /ModDate and the trailer /ID. Page count plus a hash of the extracted text was
+ * identical across the same three runs, so that is what a CI assertion should
+ * compare. Do not assert on md5 of the file.
+ *
+ * @param {string} pdf
+ * @returns {{pages: number|null, sha256: string|null, bytes: number}}
+ */
+function pdfTextFingerprint(pdf) {
+  const out = { pages: null, sha256: null, bytes: fs.statSync(pdf).size };
+  if (have('pdfinfo')) {
+    const m = run('pdfinfo', [pdf], { timeoutMs: 30000 }).out.match(/^Pages:\s+(\d+)/m);
+    if (m) out.pages = parseInt(m[1], 10);
+  }
+  if (have('pdftotext')) {
+    const r = run('pdftotext', [pdf, '-'], { timeoutMs: 60000 });
+    if (r.code === 0) {
+      out.sha256 = require('crypto').createHash('sha256').update(r.out, 'utf8').digest('hex');
+    }
+  }
+  return out;
+}
+
 function inspectPdf(pdf) {
   const info = { bytes: fs.statSync(pdf).size, pages: null, fonts: null, tocLines: null };
 
@@ -611,7 +918,8 @@ function inspectPdf(pdf) {
 
 module.exports = {
   RenderError,
-  ENGINES: ['libreoffice', 'word', 'both'],
+  // "auto" is first because it is the default: see selectEngines().
+  ENGINES: ['auto', 'libreoffice', 'word', 'both'],
   SOFFICE,
   WORD_APP,
   WORD_STAGE,
@@ -619,12 +927,18 @@ module.exports = {
   PREF_JOURNAL,
   PREF_UI_PATH,
   docxFieldInfo,
+  docxLayoutInfo,
+  wordAvailable,
+  selectEngines,
   checkLibreOffice,
   checkWordInstalled,
   renderLibreOffice,
   renderWord,
   recoverPrefJournal,
+  sweepStaleStage,
   readUpdateLinksPref,
   rasterize,
   inspectPdf,
+  pdfBlankPages,
+  pdfTextFingerprint,
 };

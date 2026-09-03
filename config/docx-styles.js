@@ -695,14 +695,42 @@ const VERSO_HEADER = [
 ];
 
 /**
+ * The `plain` page style's footer: a centred folio, nothing else.
+ *
+ * fancyhdr's `plain` is NOT an empty page style. `\fancypagestyle{plain}` is
+ * left at its LaTeX default, which is an empty head plus `\@oddfoot =
+ * {\hfil\thepage\hfil}` — and `\chapter` issues `\thispagestyle{plain}` on every
+ * chapter opening. Measured on the shipped print PDF, page 9 (the Foreword
+ * opening): a centred "9" at x 309.95..316.44pt, i.e. centred on 313.20pt.
+ *
+ * That is the TEXT BLOCK centre on a recto, not the paper centre (306.00pt):
+ * `\hfil…\hfil` centres within `\textwidth`, which `bindingoffset=0.2in` has
+ * already shifted 14.4pt outward. `w:jc="center"` in a footer part centres
+ * between the section's left and right margins, which mirrorMargins shifts the
+ * same way — so this reproduces the LaTeX position rather than approximating it.
+ * Do NOT "fix" this to the paper centre.
+ */
+const PLAIN_FOOTER = { align: 'center', field: { kind: 'page' }, placeholder: '1' };
+
+/**
  * Header and footer parts. BOTH variants, because both LaTeX templates set
  * `classoption: [twoside, openright]` and the same \fancyhead block: a recto
- * layout, a mirrored verso layout, and a blank `first` part for the title page
- * and every chapter opening (\thispagestyle{plain}).
+ * layout, a mirrored verso layout, and a `first` pair reproducing
+ * \thispagestyle{plain} — blank head, centred folio.
  *
- * The `first` part is what makes titlePg meaningful. Each chapter section
- * carries titlePg, so a chapter's opening page draws this blank part instead of
- * a running head — which is what the book class does at \chapter.
+ * The `first` parts are what make titlePg meaningful. Each chapter section
+ * carries titlePg, so a chapter's opening page draws these instead of a running
+ * head. Both halves are load-bearing and they are NOT symmetric:
+ *
+ *   header3 (blank)  = `plain` has no running head        -> \fancyhead{} cleared
+ *   footer3 (folio)  = `plain` DOES have a centred folio   -> \@oddfoot{\hfil\thepage\hfil}
+ *
+ * Declaring only the blank header — as this config did until the folio was
+ * restored — leaves a chapter opening with neither a head nor a page number,
+ * because `w:titlePg` suppresses the `default`/`even` footer on that page too.
+ * Measured, same engine, same six-chapter document, footerReference w:type="first"
+ * stripped vs present: 7 opening pages with an empty footer band vs 7 carrying a
+ * folio. One folio-less page per section, for every section in the book.
  */
 const HEADERS = [
   { type: 'default', file: 'header1.xml', cells: RECTO_HEADER },
@@ -712,6 +740,7 @@ const HEADERS = [
 const FOOTERS = [
   { type: 'default', file: 'footer1.xml', cells: null },
   { type: 'even', file: 'footer2.xml', cells: null },
+  { type: 'first', file: 'footer3.xml', paragraph: PLAIN_FOOTER },
 ];
 
 // ---------------------------------------------------------------------------

@@ -61,7 +61,17 @@ const OUT_DIR = path.join(ROOT, 'templates', 'docx');
 /** Fixed timestamp so rebuilds from unchanged inputs are byte-identical. */
 const EPOCH = new Date('2020-01-01T00:00:00Z');
 
-/** Relationship id base for header/footer parts. */
+/**
+ * Relationship id base for header/footer parts.
+ *
+ * Ids are allocated sequentially across headers then footers, so the set grows
+ * downwards from here as parts are added (today: rId901-903 headers,
+ * rId904-906 footers). 901 is far above anything pandoc's baseline
+ * reference.docx uses (rId1-rId8 plus a rId30 sample hyperlink), so a new part
+ * can never collide with a baseline relationship — and `addRelationships`
+ * deletes any same-Id relationship before writing, so it cannot collide with a
+ * previous run either.
+ */
 const HF_REL_BASE = 901;
 
 const REL_TYPES = {
@@ -480,29 +490,72 @@ function fieldRuns(field, placeholder) {
 }
 
 /**
- * Build a running-head part.
+ * Build one header or footer part.
  *
- * A borderless two-cell fixed-layout TABLE is used rather than tab stops, and
- * that is a correctness decision, not a style one. pandoc emits a numbered
- * heading as [SectionNumber "1.1"][<w:tab/>]["Title"], and STYLEREF reproduces
- * that embedded tab inside the header. With a tab-stop layout the embedded tab
- * consumes the header's own stops: the page number gets torn away from the
- * title, and a long verso heading overflows the page edge and clips. Table cells
- * are hard boundaries, so neither can happen. The `w:tab w:pos="360"` inside
- * each cell tames the embedded tab to a 0.25in gap.
+ * Three shapes, chosen by the descriptor in config/docx-styles.js:
+ *
+ *   { cells: [a, b] }   a borderless two-cell running head (see below)
+ *   { paragraph: p }    a single aligned line — the `plain` centred folio
+ *   { cells: null }     an explicitly EMPTY part
+ *
+ * The empty case is not the same as omitting the part. A `first` reference that
+ * points at nothing makes Word fall back to the `default` part for that page,
+ * which is the opposite of what titlePg is for; an explicit blank part is what
+ * actually clears the running head on a chapter opening.
+ *
+ * A borderless two-cell fixed-layout TABLE is used for the running heads rather
+ * than tab stops, and that is a correctness decision, not a style one. pandoc
+ * emits a numbered heading as [SectionNumber "1.1"][<w:tab/>]["Title"], and
+ * STYLEREF reproduces that embedded tab inside the header. With a tab-stop
+ * layout the embedded tab consumes the header's own stops: the page number gets
+ * torn away from the title, and a long verso heading overflows the page edge and
+ * clips. Table cells are hard boundaries, so neither can happen. The
+ * `w:tab w:pos="360"` inside each cell tames the embedded tab to a 0.25in gap.
+ *
+ * The `paragraph` shape deliberately does NOT use the table: a folio has one
+ * field and no second column to be torn away from, and `w:jc="center"` on a
+ * plain paragraph centres on the section's own margins — which mirrorMargins
+ * shifts by the gutter, matching LaTeX's `\hfil\thepage\hfil` inside a
+ * bindingoffset-shifted `\textwidth`. Centring inside a fixed-width table cell
+ * would instead pin the folio to the paper, and the recto folios would sit
+ * 14.4pt left of where the PDF puts them.
  *
  * @param {object} spec resolved variant spec
- * @param {Array|null} cells two cell descriptors, or null for a blank header
+ * @param {{cells?: Array|null, paragraph?: object}} item part descriptor
  * @param {'header'|'footer'} kind
  * @returns {string} complete part XML
+ * @throws {Error} if the descriptor asks for both layouts at once
  */
-function buildHeaderFooterPart(spec, cells, kind) {
+function buildHeaderFooterPart(spec, item, kind) {
   const root = kind === 'header' ? 'w:hdr' : 'w:ftr';
   const styleId = kind === 'header' ? 'Header' : 'Footer';
   const decl = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
   const open = `<${root} xmlns:w="${W_NS}" xmlns:r="${R_NS}">`;
 
   const emptyPara = `<w:p><w:pPr><w:pStyle w:val="${styleId}"/></w:pPr></w:p>`;
+  const { cells, paragraph } = item;
+
+  if (cells && paragraph) {
+    throw new Error(
+      `build-reference-docx: ${item.file} declares both "cells" and "paragraph"; ` +
+        'a part has one layout. Pick the table (two columns) or the single line.'
+    );
+  }
+
+  if (paragraph) {
+    // \thispagestyle{plain}: one centred field, no rule, no table.
+    return (
+      decl +
+      open +
+      '<w:p><w:pPr>' +
+      `<w:pStyle w:val="${styleId}"/>` +
+      '<w:spacing w:before="0" w:after="0"/>' +
+      `<w:jc w:val="${paragraph.align}"/>` +
+      '</w:pPr>' +
+      fieldRuns(paragraph.field, paragraph.placeholder) +
+      `</w:p></${root}>\n`
+    );
+  }
 
   if (!cells) {
     // \thispagestyle{empty}: an explicit empty part, so nothing is inherited.
@@ -605,7 +658,8 @@ function patchDocument(xml, spec, refs) {
     `w:header="${spec.headerFooterDist}" w:footer="${spec.headerFooterDist}" ` +
     `w:gutter="${spec.gutter}"/>` +
     '<w:pgNumType w:fmt="decimal"/>' +
-    // Activates the `first` header, i.e. \thispagestyle{empty} on the title page.
+    // Activates BOTH `first` parts — the blank header and the folio footer —
+    // i.e. \thispagestyle{plain} on the opening page of every section.
     '<w:titlePg/>';
 
   const ordered = mergeOrderedSectPr(body);
@@ -818,7 +872,7 @@ async function buildVariant(variantName) {
     const list = kind === 'header' ? spec.headers : spec.footers;
     for (const item of list) {
       const relId = `rId${relCounter++}`;
-      write(`word/${item.file}`, buildHeaderFooterPart(spec, item.cells, kind));
+      write(`word/${item.file}`, buildHeaderFooterPart(spec, item, kind));
       refs.push({ type: item.type, relId, kind, file: item.file });
       partsForCT.push({ part: `word/${item.file}`, kind });
     }

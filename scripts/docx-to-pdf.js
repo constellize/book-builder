@@ -7,11 +7,17 @@
  *     node scripts/docx-to-pdf.js ref.docx --engine both --png 1
  *     node scripts/docx-to-pdf.js ref.docx --engine word -o /tmp/out.pdf
  *
- * Default engine is LibreOffice: prompt-free because it is not sandboxed, and
- * the only engine that exists in CI. Word is available for fidelity checks and
- * is the only engine that fills in a live { TOC } field -- see
- * scripts/lib/docx-render.js for the full account of both Word prompts and the
- * measurements behind each defence.
+ * The default engine is `auto`, and it exists because the two engines do not
+ * agree about page parity. LibreOffice drops the implicit blank verso that an
+ * `oddPage` section break needs, so a book built with open-right chapters
+ * renders four pages short, with chapters on versos and mirrored margins bound
+ * on the wrong edge -- while the logical page numbers stay correct, which is
+ * what makes it convincing. `auto` reads the document and sends anything with
+ * mid-document open-right breaks to Word; everything else keeps the fast
+ * LibreOffice path. `--engine libreoffice` still does exactly what it says and
+ * is still the CI engine; it just cannot produce that wrong proof in silence.
+ * The measurements are in scripts/lib/docx-render.js, together with the full
+ * account of the two Word prompts and the defence against each.
  *
  * `--engine both` renders with each and prints a comparison table. That is the
  * fidelity-check workflow: LibreOffice for the fast loop, Word to confirm the
@@ -107,6 +113,14 @@ function reportNotes(notes) {
       case 'pref-restored':
         console.log(chalk.gray(`  ${render.PREF_UI_PATH} restored to ${n.to ? 'ON' : 'OFF'}`));
         break;
+      case 'stage-swept':
+        console.log(
+          chalk.yellow(
+            `  swept ${n.removed} staged file${n.removed === 1 ? '' : 's'} left by a killed run ` +
+              '(they wedge Word if left in place)'
+          )
+        );
+        break;
       case 'pref-untouched':
         console.log(chalk.gray(`  preference left alone (${n.reason})`));
         break;
@@ -120,9 +134,59 @@ function reportNotes(notes) {
   }
 }
 
-function comparisonTable(results) {
+/**
+ * The banner that has to be impossible to scroll past.
+ *
+ * Printed whenever LibreOffice is the sole engine for a document that declares
+ * mid-document open-right breaks -- i.e. exactly the case that used to produce a
+ * plausible-looking, wrong print proof with no warning at all.
+ */
+function notAProofBanner(layout, { wordMissing }) {
+  const bar = '='.repeat(74);
+  console.log(chalk.red.bold(`\n${bar}`));
+  console.log(chalk.red.bold('  THIS PDF IS NOT A VALID PRINT PROOF'));
+  console.log(chalk.red.bold(bar));
+  console.log(
+    chalk.red(
+      `  The document declares ${layout.openRightBreaks} open-right ` +
+        `(${layout.sectionTypes.join('/')}) section breaks.\n` +
+        '  LibreOffice does not insert the implicit blank versos they require, so\n' +
+        '  from the first dropped blank onward every PHYSICAL page has the wrong\n' +
+        '  parity: chapters land on versos, running heads sit on the wrong side.'
+    )
+  );
+  if (layout.mirrorMargins || layout.gutter) {
+    console.log(
+      chalk.red(
+        `  This document also uses ${layout.mirrorMargins ? 'mirrored margins' : 'a binding gutter'}` +
+          `${layout.gutter ? ` (gutter ${layout.gutter} twips)` : ''}, which the same\n` +
+          '  parity shift binds on the wrong edge.'
+      )
+    );
+  }
+  console.log(
+    chalk.yellow(
+      '\n  The logical page numbers are still correct, so nothing in the PDF itself\n' +
+        '  will tell you this. Do not check openright with it.'
+    )
+  );
+  console.log(
+    chalk.cyan(
+      wordMissing
+        ? '\n  Fix: render on a machine with Microsoft Word (the default engine "auto"\n' +
+            '  would have chosen it). LibreOffice output is fine for text, styling and\n' +
+            '  font checks -- just not for page parity.'
+        : '\n  Fix: drop --engine libreoffice (the default "auto" picks Word here), or\n' +
+            '  pass --engine both to see the divergence measured side by side.'
+    )
+  );
+  console.log(chalk.red.bold(`${bar}\n`));
+}
+
+function comparisonTable(results, layout) {
   const rows = results.map((r) => {
     const i = render.inspectPdf(r.pdf);
+    const blanks = r.blanks === undefined ? render.pdfBlankPages(r.pdf) : r.blanks;
     return {
       engine: ENGINE_LABEL[r.engine],
       time: `${(r.ms / 1000).toFixed(2)}s`,
@@ -131,11 +195,22 @@ function comparisonTable(results) {
       toc: i.tocLines === null ? '?' : String(i.tocLines),
       fonts: i.fonts ? i.fonts.length : '?',
       fontList: i.fonts || [],
+      blanks: blanks === null ? '?' : String(blanks.length),
+      blankList: blanks || [],
+      pageCount: i.pages,
     };
   });
 
-  const head = ['engine', 'time', 'size', 'pages', 'TOC lines', 'fonts'];
-  const cells = rows.map((r) => [r.engine, r.time, r.size, r.pages, r.toc, String(r.fonts)]);
+  const head = ['engine', 'time', 'size', 'pages', 'blanks', 'TOC lines', 'fonts'];
+  const cells = rows.map((r) => [
+    r.engine,
+    r.time,
+    r.size,
+    r.pages,
+    r.blanks,
+    r.toc,
+    String(r.fonts),
+  ]);
   const w = head.map((h, c) => Math.max(h.length, ...cells.map((row) => row[c].length)));
   const line = (vals, style) =>
     console.log('  ' + style(vals.map((v, c) => v.padEnd(w[c])).join('  ')));
@@ -150,10 +225,11 @@ function comparisonTable(results) {
     }
   }
 
-  // The one difference that actually bites, called out rather than left in the
-  // numbers: LibreOffice does not update field results on import.
+  // Two differences that actually bite, called out rather than left in the
+  // numbers for the reader to notice.
   const lo = rows.find((r) => r.engine === 'LibreOffice');
   const wd = rows.find((r) => r.engine === 'Word');
+
   if (lo && wd && lo.toc === '0' && wd.toc !== '0' && wd.toc !== '?') {
     console.log(
       chalk.yellow(
@@ -161,6 +237,36 @@ function comparisonTable(results) {
           `(0 entries vs Word's ${wd.toc}). Not a styling regression.`
       )
     );
+  }
+
+  // A page-count gap on an open-right document is the parity defect, measured.
+  // This one IS a regression in the LibreOffice output, not a difference of
+  // opinion, so it is red rather than yellow.
+  if (lo && wd && layout && layout.needsWord && lo.pageCount !== null && wd.pageCount !== null) {
+    if (lo.pageCount !== wd.pageCount) {
+      const dropped = wd.pageCount - lo.pageCount;
+      console.log(
+        chalk.red.bold(
+          `\n  PARITY: LibreOffice is ${dropped} page${dropped === 1 ? '' : 's'} short ` +
+            `(${lo.pageCount} vs ${wd.pageCount}).`
+        )
+      );
+      console.log(
+        chalk.red(
+          `  Word inserted blank versos at ${wd.blankList.join(', ') || '(none found)'}; ` +
+            `LibreOffice inserted ${lo.blankList.length}.\n` +
+            '  Every physical page after the first dropped blank has inverted parity.\n' +
+            '  Trust the Word column for anything about page sides. See --engine word.'
+        )
+      );
+    } else {
+      console.log(
+        chalk.green(
+          `\n  Parity: both engines produced ${wd.pageCount} pages on an open-right ` +
+            'document; no blank verso was dropped.'
+        )
+      );
+    }
   }
 }
 
@@ -176,8 +282,10 @@ function main() {
     .argument('<input.docx>', 'path to the .docx to render')
     .option(
       '-e, --engine <name>',
-      `${render.ENGINES.join(' | ')}  ("both" renders twice and compares)`,
-      'libreoffice'
+      `${render.ENGINES.join(' | ')}  ` +
+        '("auto" = Word for open-right documents, LibreOffice otherwise; ' +
+        '"both" renders twice and compares)',
+      'auto'
     )
     .option('-o, --out <path>', 'output .pdf, or a directory (default: beside the input)')
     .option('--png [page]', 'also rasterise page N of each PDF (default page 1)')
@@ -214,7 +322,13 @@ function main() {
   }
 
   const timeoutMs = Math.max(1, parseInt(opts.timeout, 10) || 180) * 1000;
-  const engines = opts.engine === 'both' ? ['libreoffice', 'word'] : [opts.engine];
+
+  // Engine choice is a property of the DOCUMENT, not of the filename: see
+  // render.selectEngines(). reference-digital.docx is open-right with a binding
+  // gutter too, so nothing here may key off "print" appearing in a name.
+  const choice = render.selectEngines(input, opts.engine);
+  const engines = choice.engines;
+  const layout = choice.layout;
   const outputs = resolveOutputs(input, opts.out, engines);
 
   const pngPage = opts.png === undefined ? null : (opts.png === true ? 1 : parseInt(opts.png, 10));
@@ -225,6 +339,25 @@ function main() {
 
   console.log(chalk.blue(`\nRendering ${path.basename(input)}`));
   console.log(chalk.gray(`  ${input}`));
+
+  if (layout.readable) {
+    console.log(
+      chalk.gray(
+        `  layout: ${layout.sections} section${layout.sections === 1 ? '' : 's'}, ` +
+          `${layout.openRightBreaks} open-right break${layout.openRightBreaks === 1 ? '' : 's'}` +
+          `${layout.mirrorMargins ? ', mirrored margins' : ''}` +
+          `${layout.gutter ? `, gutter ${layout.gutter}` : ''}`
+      )
+    );
+  }
+  if (opts.engine === 'auto' && choice.reason) {
+    const line = `  engine: auto -> ${engines.map((e) => ENGINE_LABEL[e]).join(' + ')} (${choice.reason})`;
+    console.log(choice.wordMissing ? chalk.yellow(line) : chalk.gray(line));
+  }
+
+  // Announced BEFORE the render as well as after it, so an operator who kills a
+  // long run still saw it.
+  if (choice.notProof) notAProofBanner(layout, { wordMissing: choice.wordMissing });
 
   const fields = render.docxFieldInfo(input);
   if (fields.hasToc && engines.includes('libreoffice') && !engines.includes('word')) {
@@ -258,6 +391,22 @@ function main() {
         chalk.gray(` -> ${show(r.pdf)} (${kb(fs.statSync(r.pdf).size)})`)
     );
     reportNotes(r.notes);
+
+    // The corroborating measurement, printed for every open-right render so the
+    // claim is never "trust the engine name": the blank versos are either there
+    // or they are not.
+    if (layout.needsWord) {
+      r.blanks = render.pdfBlankPages(r.pdf);
+      if (r.blanks !== null) {
+        console.log(
+          chalk.gray(
+            `  blank versos: ${r.blanks.length}` +
+              (r.blanks.length ? ` (physical page${r.blanks.length === 1 ? '' : 's'} ${r.blanks.join(', ')})` : '')
+          )
+        );
+      }
+    }
+
     if (opts.verbose && r.stderr && r.stderr.trim()) {
       for (const l of r.stderr.trim().split('\n')) console.log(chalk.gray(`    ${l}`));
     }
@@ -283,7 +432,15 @@ function main() {
     }
   }
 
-  if (results.length > 1) comparisonTable(results);
+  if (results.length > 1) comparisonTable(results, layout);
+
+  // Repeated after the render too: the banner above has scrolled off by now on a
+  // --png run, and this is the last thing the operator reads before using the file.
+  if (choice.notProof) {
+    notAProofBanner(layout, { wordMissing: choice.wordMissing });
+    console.log(chalk.green.bold('Done') + chalk.red.bold(' — but see the warning above.'));
+    return;
+  }
 
   console.log(chalk.green.bold('\nDone.'));
 }

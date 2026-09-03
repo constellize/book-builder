@@ -123,8 +123,10 @@ function findBodySectPr(xml) {
  * document itself, so they cannot disagree with it.
  *
  * `w:titlePg` is deliberately KEPT. It makes each chapter's opening page draw
- * the `first` header part, which is blank — the docx equivalent of the book
- * class issuing \thispagestyle{plain} at \chapter.
+ * the two `first` parts — a blank header and a centred-folio footer — which is
+ * the docx equivalent of the book class issuing \thispagestyle{plain} at
+ * \chapter. Both references ride along in the clone, so chapter 2..N behave
+ * identically to chapter 1; the guards below assert that rather than trust it.
  *
  * @param {string} bodyInner inner XML of the body sectPr
  * @param {object} spec resolved variant spec
@@ -165,10 +167,34 @@ function buildChapterSectPr(bodyInner, spec) {
       );
     }
   }
-  if (!/<w:headerReference\b/.test(inner)) {
+  // Every header/footer part the reference doc declares must have survived
+  // pandoc into this document's body sectPr, because this clone is what every
+  // chapter section gets. A sectPr does not inherit, so a reference that is
+  // absent here is absent from all N chapter sections.
+  //
+  // The `first` FOOTER is the one that made this guard worth generalising.
+  // `w:titlePg` suppresses the default/even footer on a section's opening page,
+  // so if nothing is declared for `first` the page draws no footer at all —
+  // and since the `first` header is deliberately blank, a chapter opening ends
+  // up with neither a running head nor a folio. That is silent: the page just
+  // has no number on it. Measured by stripping this one reference back out of a
+  // six-chapter conversion and re-rendering: all 7 opening pages lost their
+  // folio, against a print PDF that puts a centred one on every chapter opening.
+  const declared = [
+    ...spec.headers.map((h) => ['headerReference', h.type]),
+    ...spec.footers.map((f) => ['footerReference', f.type]),
+  ];
+  const missing = declared.filter(
+    ([el, type]) => !new RegExp(`<w:${el}\\b[^>]*\\bw:type="${type}"`).test(inner)
+  );
+  if (missing.length) {
     throw new Error(
-      'docx-postprocess: the body <w:sectPr> declares no <w:headerReference>. ' +
-        'Cloning it would give every chapter a section with no running head.'
+      'docx-postprocess: the body <w:sectPr> is missing ' +
+        missing.map(([el, type]) => `<w:${el} w:type="${type}">`).join(', ') +
+        `, which the "${spec.id}" reference doc declares. Cloning it would give ` +
+        'every chapter section a page with no running head or no page number. ' +
+        'Rebuild with `node scripts/build-reference-docx.js --variant both` and ' +
+        're-run pandoc.'
     );
   }
 

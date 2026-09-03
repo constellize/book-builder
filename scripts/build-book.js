@@ -18,6 +18,12 @@ const config = require("../config/book.config.js");
 // Import emoji validation
 const { validateEmojis } = require("./validate-emojis.js");
 
+// docx post-processing. Pandoc's docx writer has no hook for per-chapter odd-page
+// section breaks or for Atkinson list markers, so both are patched into the OOXML after
+// the fact. See the docx branch in generateBook() - skipping this call leaves a .docx
+// that opens perfectly and is silently wrong.
+const { postProcessDocx } = require("./lib/docx-postprocess.js");
+
 class BookBuilder {
   constructor(options = {}) {
     this.options = {
@@ -198,6 +204,42 @@ class BookBuilder {
         )
       );
     }
+  }
+
+  /**
+   * True when the current target is written by pandoc's docx writer.
+   *
+   * Used in three places that must agree: processSpecialSections() (no \appendix raw
+   * LaTeX), generateBook() (the docx branch) and getOutputPath() (".docx"). Derived from
+   * outputs[target].format so adding a third docx variant needs no code change.
+   */
+  isDocxTarget() {
+    const outputConfig = config.outputs[this.options.target];
+    return !!outputConfig && outputConfig.format === "docx";
+  }
+
+  /**
+   * Which reference-doc variant ('digital' | 'print') the current docx target uses.
+   *
+   * This is the key docx-postprocess.js hands to config/docx-styles.js resolve(), which
+   * THROWS on an unknown key - so a typo here fails the build rather than producing a
+   * docx with the wrong section geometry. Falls back to parsing it out of the target
+   * name only if `docxVariant` was omitted from the outputs entry.
+   */
+  docxVariant() {
+    const outputConfig = config.outputs[this.options.target] || {};
+    if (outputConfig.docxVariant) {
+      return outputConfig.docxVariant;
+    }
+    const derived = String(this.options.target).replace(/^docx-/, "");
+    if (derived === "digital" || derived === "print") {
+      return derived;
+    }
+    throw new Error(
+      `Cannot determine the docx variant for target "${this.options.target}". ` +
+        `Set docxVariant: 'digital' | 'print' on outputs["${this.options.target}"] ` +
+        `in book-builder/config/book.config.js.`
+    );
   }
 
   /**
@@ -446,9 +488,21 @@ class BookBuilder {
   }
 
   /**
-   * Process special sections (foreword, introduction, appendices) for proper numbering
+   * Process special sections (foreword, introduction, appendices) for proper numbering.
+   *
+   * TARGET-AWARE. The LaTeX targets get a raw `\appendix` block spliced in before the
+   * first appendix heading, which switches LaTeX's chapter counter to A, B, ... The docx
+   * writer DROPS raw LaTeX without a word of warning, so on a docx build that block does
+   * nothing and --number-sections happily carries the chapter counter onward: appendix A
+   * renders as "10 Appendix A: ..." and appendix B as "11 Appendix B: ...".
+   *
+   * For docx the appendix H1s are marked {.unnumbered} instead, exactly like Foreword,
+   * Introduction and References already are. The prose label "Appendix A:" that this
+   * method prepends then carries the identity, which is the whole point of that label.
    */
   processSpecialSections(content, fileName) {
+    const isDocx = this.isDocxTarget();
+
     // Handle foreword - make it unnumbered
     if (fileName === 'foreword-faq.md') {
       // Convert the first ## **Foreword** to # Foreword {.unnumbered}
@@ -490,19 +544,60 @@ class BookBuilder {
       }
 
       if (insertIndex !== -1) {
-        // Only add \appendix for the first appendix (A)
-        if (appendixLetter === 'A') {
+        // Only add \appendix for the first appendix (A), and only for writers that
+        // understand raw LaTeX. See the method comment: on docx this line is discarded
+        // silently and the appendices keep counting up from chapter 9.
+        if (appendixLetter === 'A' && !isDocx) {
           lines.splice(insertIndex, 0, '\\appendix\n');
           titleIndex++; // Adjust title index after insertion
         }
-        
+
         // Update the title to include "Appendix X:"
         if (titleIndex !== -1) {
-          const originalTitle = lines[titleIndex].replace(/^# +/, '');
-          lines[titleIndex] = `# Appendix ${appendixLetter}: ${originalTitle}`;
+          const originalTitle = lines[titleIndex]
+            .replace(/^# +/, '')
+            // Strip any attribute block the source already carries so the rebuilt
+            // heading cannot end up with two of them.
+            .replace(/\s*\{[^}]*\}\s*$/, '');
+          lines[titleIndex] = isDocx
+            ? `# Appendix ${appendixLetter}: ${originalTitle} {.unnumbered}`
+            : `# Appendix ${appendixLetter}: ${originalTitle}`;
         }
       }
       content = lines.join('\n');
+    }
+
+    // Belt and braces for the docx targets: strip any remaining standalone raw-LaTeX
+    // line. The \appendix splice above is already skipped, but the SOURCES contain
+    // hand-written LaTeX too - ch4.md line 412 is a bare \vspace{1em} used to space a
+    // figure in the PDFs. pandoc's markdown reader turns those into RawBlock "tex", the
+    // LaTeX writer honours them and the docx writer drops them, so leaving them in is
+    // harmless today. It is stripped anyway because "harmless" here depends entirely on
+    // the writer silently discarding input, and the next stray command may not be a
+    // spacing hint.
+    //
+    // Deliberately conservative: only a whole line that is nothing but backslash-command
+    // (+ optional {...}/[...] arguments) is removed. Inline maths, escaped characters
+    // such as \* or \$, and code blocks (which are indented or fenced, never flush-left
+    // bare commands) are all left alone.
+    if (isDocx) {
+      const rawTexLine = /^[ \t]*\\[a-zA-Z]+\*?(?:\[[^\]\n]*\]|\{[^}\n]*\})*[ \t]*$/;
+      let stripped = 0;
+      content = content
+        .split('\n')
+        .filter((line) => {
+          if (rawTexLine.test(line)) {
+            stripped++;
+            return false;
+          }
+          return true;
+        })
+        .join('\n');
+      if (stripped > 0) {
+        console.log(
+          chalk.gray(`  Stripped ${stripped} raw LaTeX line(s) for docx: ${fileName}`)
+        );
+      }
     }
 
     return content;
@@ -678,6 +773,7 @@ class BookBuilder {
 
     // Check if this is a PDF target (including new targets)
     const isPdfTarget = outputConfig.format === 'pdf';
+    const isDocxTarget = this.isDocxTarget();
 
     // Template and Lua filters are resolved per target from book.config.js.
     // Both resolvers throw if a configured file is missing - nothing is skipped.
@@ -694,6 +790,64 @@ class BookBuilder {
       pandocArgs.push(`--pdf-engine=${outputConfig.engine}`);
       pandocArgs.push(`--pdf-engine-opt=-shell-escape`); // Required for Minted syntax highlighting
       pandocArgs.push(`--dpi=${outputConfig.dpi}`);
+
+    } else if (isDocxTarget) {
+      // DOCX-specific settings.
+      //
+      // THIS BRANCH MUST STAY ABOVE THE HTML `else`. It is not a style preference: the
+      // final else pushes --standalone, --embed-resources and (via pandoc.templates)
+      // --template=book-template.html5. Handing an HTML5 template to the docx writer
+      // produces a .docx that Word opens without complaint and that is complete rubbish.
+      //
+      // What is deliberately NOT passed here:
+      //   --template          the docx writer has no template mechanism; pandoc errors.
+      //   --embed-resources   HTML-only; docx already embeds media in the .docx zip.
+      //   --standalone        declared in the defaults file; the docx writer is always
+      //                       standalone anyway.
+      //
+      // --toc / --number-sections come from the defaults file (they are the same for
+      // both variants), --reference-doc and the Lua filters are per target.
+      const defaultsFile = outputConfig.defaultsFile;
+      if (!defaultsFile) {
+        throw new Error(
+          `Target "${this.options.target}" has format "docx" but no defaultsFile. ` +
+            `Add one to outputs["${this.options.target}"] in book-builder/config/book.config.js ` +
+            `- the shared pandoc-defaults.yaml declares pdf-engine keys and a LaTeX ` +
+            `filter chain that make no sense for the docx writer.`
+        );
+      }
+      const defaultsPath = path.resolve(this.rootDir, defaultsFile);
+      if (!(await fs.pathExists(defaultsPath))) {
+        throw new Error(
+          `Pandoc defaults file not found for target "${this.options.target}": ${defaultsPath}`
+        );
+      }
+      pandocArgs.push(`--defaults=${defaultsPath}`);
+
+      // Reference document: styles, embedded Atkinson faces, page geometry. A missing
+      // one is a hard error - pandoc would otherwise fall back to its built-in reference
+      // doc and emit a Calibri document in which every style the callout filter names
+      // (Callout Title, Source Code, ...) resolves to nothing.
+      if (!outputConfig.referenceDoc) {
+        throw new Error(
+          `Target "${this.options.target}" has format "docx" but no referenceDoc. ` +
+            `Add one to outputs["${this.options.target}"] in book-builder/config/book.config.js.`
+        );
+      }
+      const referenceDocPath = path.resolve(this.rootDir, outputConfig.referenceDoc);
+      if (!(await fs.pathExists(referenceDocPath))) {
+        throw new Error(
+          `Reference document not found for target "${this.options.target}": ${referenceDocPath}\n` +
+            `Build it with: node book-builder/scripts/build-reference-docx.js --variant ${this.docxVariant()}`
+        );
+      }
+      pandocArgs.push(`--reference-doc="${referenceDocPath}"`);
+
+      // Explicit --dpi, matching the PDF branch. The docx writer converts image pixel
+      // dimensions to EMU using it, so images scale like they do in the PDFs.
+      if (outputConfig.dpi) {
+        pandocArgs.push(`--dpi=${outputConfig.dpi}`);
+      }
 
     } else if (outputConfig.format === 'epub3') {
       // EPUB-specific settings
@@ -770,6 +924,58 @@ class BookBuilder {
     } catch (error) {
       throw new Error(`Pandoc failed: ${error.message}`);
     }
+
+    // ------------------------------------------------------------------
+    // docx post-processing. NOT OPTIONAL.
+    //
+    // Pandoc's docx writer offers no way to (a) start each chapter on a recto page or
+    // (b) point list markers at the embedded Atkinson faces. docx-postprocess.js patches
+    // both into word/document.xml and word/numbering.xml after the fact - it clones the
+    // sectPr pandoc actually wrote rather than inventing one, so it stays correct if the
+    // reference doc's page setup changes.
+    //
+    // If this call is removed or silently swallowed, the .docx still opens, still has
+    // every chapter, and is still the right size. It simply loses openright and renders
+    // bullets in Symbol. That is exactly the class of failure this whole pipeline keeps
+    // producing, so any error here fails the build loudly instead of warning.
+    // ------------------------------------------------------------------
+    if (isDocxTarget) {
+      const variant = this.docxVariant();
+      console.log(chalk.yellow(`🔧 Post-processing docx (${variant})...`));
+      let result;
+      try {
+        result = postProcessDocx({
+          docxPath: outputPath,
+          variant,
+          log: (msg) => console.log(chalk.gray(`   ${msg}`)),
+        });
+      } catch (error) {
+        throw new Error(
+          `docx post-processing failed for target "${this.options.target}": ${error.message}\n` +
+            `The .docx at ${outputPath} is INCOMPLETE - it has no odd-page chapter breaks ` +
+            `and its list markers still point at the default fonts. Do not ship it.`
+        );
+      }
+      console.log(
+        chalk.gray(
+          `   ${result.sections} chapter section break(s), ` +
+            `${result.levels} numbering level(s) patched ` +
+            `(${result.bullets} bullet, ${result.ordered} ordered), ` +
+            `${(result.bytes / 1024).toFixed(1)} KiB`
+        )
+      );
+
+      // A docx with zero inserted section breaks means insertChapterSections() found no
+      // chapter Heading1 to break on - the writer, the reference doc or the style names
+      // changed underneath it. Nothing downstream would notice.
+      if (!result.sections) {
+        throw new Error(
+          `docx post-processing inserted 0 chapter section breaks into ${outputPath}. ` +
+            `Expected one per chapter. Check that pandoc is still emitting Heading1 ` +
+            `paragraphs and that config/docx-styles.js matches the reference document.`
+        );
+      }
+    }
   }
 
   /**
@@ -843,6 +1049,11 @@ class BookBuilder {
       case "epub3":
         extension = ".epub";
         break;
+      case "docx":
+        // Without this case the `default` below names the file .html and pandoc writes
+        // docx bytes into it. Word will not open it and nothing in the build complains.
+        extension = ".docx";
+        break;
       default:
         extension = ".html";
     }
@@ -858,7 +1069,7 @@ program
   .version("1.0.0")
   .option(
     "-t, --target <target>",
-    "build target (digital, print, web, development, epub, pdf, all)",
+    "build target (digital, print, web, development, epub, docx-digital, docx-print, pdf, all)",
     "development"
   )
   .option("-v, --verbose", "verbose output", false)
@@ -873,14 +1084,18 @@ program
   .option("--no-clean", "do not remove the output directory (default)")
   .action(async (options) => {
     if (options.target === "all") {
-      // Build every published target. Must include BOTH pdf variants: publish:website
-      // copies build/digital/constellize-book.pdf AND build/print/constellize-book.pdf.
+      // Build every published target. Must include BOTH pdf variants and BOTH docx
+      // variants: publish-to-website.sh copies build/digital/constellize-book.pdf,
+      // build/print/constellize-book.pdf, build/docx-digital/constellize-book.docx and
+      // build/docx-print/constellize-book.docx.
       const targets = config.allTargets || [
         "digital",
         "print",
         "web",
         "development",
         "epub",
+        "docx-digital",
+        "docx-print",
       ];
       for (const target of targets) {
         const builder = new BookBuilder({ ...options, target });

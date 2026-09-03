@@ -1,0 +1,82 @@
+# Pandoc Defaults for Constellize Book - DOCX (print variant)
+#
+# This file is NOT adapted from pandoc-defaults-print.yaml. The LaTeX defaults carry
+# `pdf-engine:`, `pdf-engine-opts:` and a `variables:` block full of LaTeX-only settings
+# (documentclass, classoption, geometry, colorlinks, linestretch...). The docx writer
+# silently ignores every one of them, so copying them in would only create the illusion
+# that they do something. The docx look comes from the reference document
+# (templates/docx/reference-print.docx) and from scripts/lib/docx-postprocess.js.
+#
+# print vs digital: the two reference documents differ ONLY in the Hyperlink style
+# (print does not colour/underline links for ink), and each target gets its own callout
+# Lua filter. Everything in this file is therefore identical to
+# pandoc-defaults-docx-digital.yaml by design - keep the two in sync.
+#
+# What IS copied verbatim from pandoc-defaults-digital.yaml is the `from:` reader
+# extension string below. It must stay identical across every target: the reader decides
+# what the markdown *means* (fenced divs for callouts, citations, grid tables,
+# implicit_figures, link_attributes...). A shorter list here would silently change the
+# document the docx writer sees.
+
+# Input reader - MUST match pandoc-defaults-digital.yaml exactly
+from: markdown+smart+yaml_metadata_block+fenced_code_blocks+backtick_code_blocks+pipe_tables+grid_tables+simple_tables+multiline_tables+footnotes+inline_notes+citations+raw_html+markdown_in_html_blocks+native_divs+native_spans+fenced_divs+bracketed_spans+definition_lists+example_lists+startnum+fancy_lists+task_lists+line_blocks+escaped_line_breaks+link_attributes+autolink_bare_uris+implicit_header_references+blank_before_header+space_in_atx_header+header_attributes+implicit_figures+fenced_code_attributes+inline_code_attributes+raw_attribute
+
+# NO `template:` key. The docx writer has no template; --template would be rejected.
+# NO `pdf-engine:` / `pdf-engine-opts:`. There is no PDF engine in this pipeline.
+# NO `reference-doc:` key either - build-book.js passes --reference-doc from
+# outputs['docx-print'].referenceDoc in book.config.js, so the reference document and
+# the output directory are declared in the same place.
+
+# Image processing. The docx writer uses dpi to convert image pixel dimensions into
+# the EMU extents it writes into the drawing XML, so this one really does apply.
+dpi: 300
+
+# Table of Contents. Word populates the TOC field on open / F9.
+toc: true
+toc-depth: 3
+
+# Section numbering. Chapters number 1..9; Foreword, Introduction, References and both
+# appendices carry {.unnumbered} (see BookBuilder.processSpecialSections) so they stay
+# out of the counter. The LaTeX targets use a `\appendix` raw block for that instead -
+# the docx writer DROPS raw LaTeX silently, which is why the docx path must not use it.
+number-sections: true
+
+# ---------------------------------------------------------------------------
+# NO `filters:` KEY HERE, AND NEVER A TOP-LEVEL `citeproc: true` KEY.
+#
+# The filter chain for the docx targets lives in pandoc.filters in
+# book-builder/config/book.config.js and is passed on the command line by
+# BookBuilder.generateBook(), which emits, in this exact order:
+#
+#     --filter=pandoc-crossref  --citeproc  --lua-filter=callout-...  --lua-filter=link-...
+#
+# pandoc applies --filter / --lua-filter / --citeproc in command-line order, so that
+# gives crossref -> citeproc -> callouts -> links, the same order web and epub use.
+#
+# Two things must never change:
+#   1. pandoc-crossref runs BEFORE citeproc. Both claim `@`-prefixed keys and the first
+#      one wins; with citeproc first, `@sec:...` cross-references become dangling
+#      `#ref-sec:...` anchors with no bibliography entry.
+#   2. citeproc is part of the ORDERED chain, never a top-level `citeproc: true` key in
+#      a defaults file. A top-level key runs citeproc outside the chain and lets
+#      pandoc-crossref revert Cite elements back to literal "[@key]" text. That silently
+#      rendered all 28 citations raw in the digital PDF while still emitting a correct
+#      bibliography, so page count and file size looked completely normal.
+#
+# Adding a `filters:` list here would ALSO double-apply the callout and link filters,
+# because the command-line ones are appended to the defaults-file chain rather than
+# replacing it.
+# ---------------------------------------------------------------------------
+
+# Metadata
+metadata-files:
+  - book-builder/templates/metadata.yaml
+
+# metadata.yaml sets `date: \today` for the LaTeX targets. The docx writer has no LaTeX,
+# so it would put the literal five characters "\today" on the title page. Blank it out.
+metadata:
+  date: ""
+
+# The docx writer is always standalone; stated explicitly so the intent is not mistaken
+# for an omission.
+standalone: true
