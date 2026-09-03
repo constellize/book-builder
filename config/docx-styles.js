@@ -20,6 +20,7 @@
  * PROVENANCE — every number below is traced to a real source file
  * ---------------------------------------------------------------------------
  * templates/book-{digital,print}.latex (both identical on these points):
+ *   \documentclass[twoside,openright,11pt]{book}
  *   \usepackage[letterpaper,margin=1in,bindingoffset=0.2in]{geometry}
  *   \titleformat{\chapter}[display]{\normalfont\huge\bfseries}{...}{20pt}{\Huge}
  *   \titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
@@ -116,8 +117,59 @@ const PAGE = { width: 12240, height: 15840 };
 /** `margin=1in`. */
 const MARGIN = 1440;
 
-/** `bindingoffset=0.2in` -> w:gutter. Print only; digital has no binding. */
+/**
+ * `bindingoffset=0.2in` -> w:gutter.
+ *
+ * BOTH variants. book-digital.latex and book-print.latex carry the identical
+ * `\usepackage[letterpaper,margin=1in,bindingoffset=0.2in]{geometry}` line, so a
+ * digital docx with gutter 0 would not be the same book as the digital PDF. The
+ * docx exists to hand a typesetter a file that reproduces the LaTeX layout; a
+ * "nicer on screen" departure defeats that.
+ */
 const GUTTER = 288;
+
+/**
+ * `w:type` of every section break in the document, matching `openright`.
+ *
+ * `oddPage` starts the section on the next odd (recto) page, inserting a blank
+ * verso when needed — exactly \cleardoublepage. See CHAPTER_BREAK_STYLES for why
+ * this alone is not enough.
+ */
+const SECTION_TYPE = 'oddPage';
+
+/**
+ * Paragraph styles whose every occurrence must open a new odd-page section.
+ *
+ * WHY THIS EXISTS AT ALL. `w:type` is a property of a *section*, and pandoc emits
+ * exactly ONE section for the whole document (measured: 1 `<w:sectPr>` in the
+ * output of a five-chapter conversion). So the `oddPage` in the reference doc's
+ * body sectPr applies once, at document start, and never again. Measured before
+ * the fix: chapter 2 landed on page 4, a verso. `<w:pageBreakBefore/>` on
+ * Heading1 breaks to a *new* page, not to an *odd* page.
+ *
+ * The per-chapter mechanism lives in scripts/lib/docx-postprocess.js, which
+ * inserts one section-break paragraph ahead of each of these styles. It is a
+ * post-process rather than a Lua filter or a style property because:
+ *
+ *   - A sectPr does NOT inherit: every emitted one must repeat pgSz, pgMar
+ *     (gutter included), pgNumType, titlePg and the header/footer r:ids, or the
+ *     new section silently reverts to Word's defaults and the running heads
+ *     vanish. The post-process CLONES the sectPr pandoc actually wrote, so the
+ *     r:ids are correct by construction — there is no cross-file id contract
+ *     that can drift. A Lua filter would have to reproduce those ids from a file
+ *     it cannot see.
+ *   - A style-level sectPr is not valid OOXML. `w:style/w:pPr` is CT_PPrGeneral
+ *     (CT_PPrBase + w:pPrChange); only `w:p/w:pPr` is CT_PPr, which is the type
+ *     that carries the `w:sectPr` particle. Word drops it silently.
+ *   - The list-marker fix (below) already requires a post-process pass over the
+ *     produced .docx, so this adds no new pipeline stage.
+ *
+ * `<w:pageBreakBefore/>` stays on Heading1 as a fallback for anyone converting
+ * without the post-process. Measured: Word does not double-break — a Heading1
+ * already sitting at the top of a fresh odd-page section paginates identically
+ * with and without it (11 pages either way, chapters on 3/5/7/9/11).
+ */
+const CHAPTER_BREAK_STYLES = ['Heading1'];
 
 /** Distance of header/footer from the paper edge (0.5in). */
 const HEADER_FOOTER_DIST = 720;
@@ -178,10 +230,17 @@ const COLOR = {
  * must REPLACE the whole rFonts element rather than add attributes to it.
  *
  * @param {string} name font family name
+ * @param {{hint?: string}} [opts] `hint` emits `w:hint`, which tells Word which
+ *   of the four script slots to use for a character it cannot classify. Only
+ *   needed on list markers, where the marker is a lone symbol with no
+ *   surrounding text to classify it by; omitted everywhere else so existing
+ *   output stays byte-identical.
  * @returns {string} XML
  */
-const rFonts = (name) =>
-  `<w:rFonts w:ascii="${name}" w:hAnsi="${name}" w:cs="${name}" w:eastAsia="${name}"/>`;
+const rFonts = (name, opts = {}) =>
+  `<w:rFonts w:ascii="${name}" w:hAnsi="${name}" w:cs="${name}" w:eastAsia="${name}"` +
+  (opts.hint ? ` w:hint="${opts.hint}"` : '') +
+  '/>';
 
 /**
  * Build a `w:sz`/`w:szCs` pair.
@@ -264,6 +323,67 @@ const headingPPr = ({ before, after, level, pageBreak = false }) =>
   '<w:ind w:firstLine="0"/>' +
   `<w:outlineLvl w:val="${level}"/>` +
   '</w:pPr>';
+
+// ---------------------------------------------------------------------------
+// List markers
+// ---------------------------------------------------------------------------
+
+/**
+ * Bullet and number markers for word/numbering.xml.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT A REFERENCE-DOC SETTING
+ * ---------------------------------------------------------------------------
+ * pandoc READS AND DISCARDS the reference doc's numbering.xml, then synthesises
+ * its own from scratch at write time. Measured: markers injected into a
+ * reference doc's `abstractNum` 990 and 991 — a tampered `nsid`, a tampered
+ * `lvlText`, a tampered `rFonts`, and a whole extra `abstractNum` — were ALL
+ * absent from the output, along with pandoc's own original `nsid`. A Lua filter
+ * cannot reach it either: numbering.xml is generated by the writer, downstream
+ * of the AST, and the AST carries no marker-font attribute. Hence
+ * scripts/lib/docx-postprocess.js, which patches the produced .docx.
+ *
+ * What pandoc generates, and what is wrong with it:
+ *   ilvl 0/3/6  lvlText U+F0B7  rFonts Symbol       <- private-use area
+ *   ilvl 1/4/7  lvlText "o"     rFonts Courier New
+ *   ilvl 2/5/8  lvlText U+F0A7  rFonts Wingdings
+ * i.e. three foreign fonts in a book that embeds Atkinson precisely so it can
+ * be reproduced anywhere. Measured with pdffonts on a real Word render:
+ * SymbolMT + CourierNewPSMT present before the patch, gone after.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THESE THREE CHARACTERS
+ * ---------------------------------------------------------------------------
+ * Verified with fontTools against all 8 embedded faces (Next and Mono, all four
+ * styles each): U+2022, U+2013 and U+00B7 are present in every one, with real
+ * outlines. So no substitution and no visual compromise — U+2022 is the
+ * canonical typographic bullet, and exactly the glyph Word's Symbol-font U+F0B7
+ * is imitating.
+ *
+ * The tiers track LaTeX's own `itemize` labels, which are
+ * \textbullet / \textendash / \textasteriskcentered / \textperiodcentered.
+ * Tier 3 uses U+00B7 rather than the asterisk operator because U+2217 is the one
+ * of those four that Atkinson does NOT contain (verified absent in all 8 faces),
+ * and faking it with a fallback font is what this whole patch exists to remove.
+ *
+ * Word's own nesting cycle (filled / hollow o / square) is not reproducible:
+ * Atkinson has no U+25E6, U+25CB, U+25AA or U+25CF. That is the only real
+ * constraint here, and it costs nothing — indentation already conveys depth.
+ *
+ * Numbered lists need no character list: digits, '.', '(' and ')' are all in
+ * Atkinson. pandoc emits ordered levels with NO `w:rPr` at all, so their markers
+ * merely inherit; Word happened to resolve that to Atkinson already, LibreOffice
+ * substituted. Writing the font explicitly makes both deterministic.
+ */
+const LIST_MARKERS = {
+  /** Marker typeface. Body font, so markers match the text they introduce. */
+  font: FONTS.sans,
+  /**
+   * Cycled over the nine `w:ilvl` values (0-8), exactly the way pandoc cycles
+   * its own three. Index = ilvl % bullets.length.
+   */
+  bullets: ['•', '–', '·'],
+};
 
 // ---------------------------------------------------------------------------
 // theme1.xml
@@ -552,12 +672,55 @@ for (const [styleId, rPr] of Object.entries(TITLING_RPR)) {
 }
 
 // ---------------------------------------------------------------------------
+// Running heads
+// ---------------------------------------------------------------------------
+
+/**
+ * Running-head layouts, mirroring fancyhdr:
+ *   \fancyhead[LO]{\leftmark}  chapter title, recto, left
+ *   \fancyhead[RO]{\thepage}   page number,   recto, right
+ *   \fancyhead[LE]{\thepage}   page number,   verso, left
+ *   \fancyhead[RE]{\rightmark} section title, verso, right
+ *
+ * STYLEREF matches the style NAME (w:name, e.g. "heading 1"), case-insensitively
+ * - not the styleId.
+ */
+const RECTO_HEADER = [
+  { align: 'left', field: { kind: 'styleref', styleName: 'Heading 1' }, placeholder: 'Chapter' },
+  { align: 'right', field: { kind: 'page' }, placeholder: '1' },
+];
+const VERSO_HEADER = [
+  { align: 'left', field: { kind: 'page' }, placeholder: '1' },
+  { align: 'right', field: { kind: 'styleref', styleName: 'Heading 2' }, placeholder: 'Section' },
+];
+
+/**
+ * Header and footer parts. BOTH variants, because both LaTeX templates set
+ * `classoption: [twoside, openright]` and the same \fancyhead block: a recto
+ * layout, a mirrored verso layout, and a blank `first` part for the title page
+ * and every chapter opening (\thispagestyle{plain}).
+ *
+ * The `first` part is what makes titlePg meaningful. Each chapter section
+ * carries titlePg, so a chapter's opening page draws this blank part instead of
+ * a running head — which is what the book class does at \chapter.
+ */
+const HEADERS = [
+  { type: 'default', file: 'header1.xml', cells: RECTO_HEADER },
+  { type: 'even', file: 'header2.xml', cells: VERSO_HEADER },
+  { type: 'first', file: 'header3.xml', cells: null },
+];
+const FOOTERS = [
+  { type: 'default', file: 'footer1.xml', cells: null },
+  { type: 'even', file: 'footer2.xml', cells: null },
+];
+
+// ---------------------------------------------------------------------------
 // Shared spec
 // ---------------------------------------------------------------------------
 
 /**
  * Everything both variants agree on. A variant delta may only override keys
- * listed in VARIANT_KEYS below.
+ * listed in VARIANT_KEYS below; any key it does not override is taken from here.
  */
 const shared = {
   fonts: FONTS,
@@ -572,6 +735,19 @@ const shared = {
   theme: THEME,
   docDefaults: DOC_DEFAULTS,
   styles: STYLES,
+  listMarkers: LIST_MARKERS,
+
+  // ---- page geometry and section behaviour --------------------------------
+  // All of this used to be per-variant. It is shared now because both LaTeX
+  // templates declare the same geometry and the same twoside/openright class
+  // options; see GUTTER and SECTION_TYPE above.
+  gutter: GUTTER,
+  sectionType: SECTION_TYPE,
+  chapterBreakStyles: CHAPTER_BREAK_STYLES,
+  mirrorMargins: true,
+  evenAndOddHeaders: true,
+  headers: HEADERS,
+  footers: FOOTERS,
 
   /** Width of the page-number cell in the running-head table, twips. */
   pageNumberCellWidth: 1361,
@@ -611,14 +787,23 @@ const shared = {
   ],
 };
 
-/** Keys a variant delta is permitted to define. Anything else is a typo. */
+/**
+ * Keys a variant delta is permitted to define. Anything else is a typo.
+ *
+ * This is deliberately WIDER than what the two variants currently use. Every key
+ * here has a value in `shared`; listing it means "a variant may legitimately
+ * override this", not "a variant does". Today only `styleOverrides` is used, on
+ * top of the mandatory `id` / `description`.
+ */
 const VARIANT_KEYS = new Set([
   'id',
   'description',
   'gutter',
   'sectionType',
+  'chapterBreakStyles',
   'mirrorMargins',
   'evenAndOddHeaders',
+  'listMarkers',
   'styleOverrides',
   'headers',
   'footers',
@@ -641,68 +826,48 @@ const hyperlinkStyle = ({ color: hex, underline }) =>
   `<w:rPr>${color(hex)}<w:u w:val="${underline ? 'single' : 'none'}"/></w:rPr>`;
 
 /**
- * Running-head layouts, mirroring fancyhdr:
- *   \fancyhead[LO]{\leftmark}  chapter title, recto, left
- *   \fancyhead[RO]{\thepage}   page number,   recto, right
- *   \fancyhead[LE]{\thepage}   page number,   verso, left
- *   \fancyhead[RE]{\rightmark} section title, verso, right
+ * ---------------------------------------------------------------------------
+ * WHAT ACTUALLY DIFFERS BETWEEN THE TWO VARIANTS: THE HYPERLINK STYLE. THAT IS
+ * THE WHOLE LIST.
+ * ---------------------------------------------------------------------------
+ * The digital reference doc used to be single-sided — gutter 0, no mirrored
+ * margins, no even-page headers, no oddPage section type. That was a departure
+ * from book-digital.latex, which carries the identical
+ * `classoption: [twoside, openright]` and the identical
+ * `bindingoffset=0.2in` as book-print.latex. The docx exists so the book can be
+ * regenerated from source for a typesetter, so it has to be the same book as the
+ * PDF; a screen-friendly variation is a different book.
  *
- * STYLEREF matches the style NAME (w:name, e.g. "heading 1"), case-insensitively
- * - not the styleId.
+ * The hyperlink delta survives because it tracks something the LaTeX templates
+ * genuinely disagree about: `urlcolor: blue` is honoured on screen, where a link
+ * should look clickable, while on paper a blue underline is ink spent on
+ * something nobody can click.
+ *
+ * Anything not listed in a delta comes from `shared`, so the two outputs are
+ * structurally incapable of disagreeing about it.
  */
-const RECTO_HEADER = [
-  { align: 'left', field: { kind: 'styleref', styleName: 'Heading 1' }, placeholder: 'Chapter' },
-  { align: 'right', field: { kind: 'page' }, placeholder: '1' },
-];
-const VERSO_HEADER = [
-  { align: 'left', field: { kind: 'page' }, placeholder: '1' },
-  { align: 'right', field: { kind: 'styleref', styleName: 'Heading 2' }, placeholder: 'Section' },
-];
-
 const digital = {
   id: 'digital',
-  description: 'Screen reading: single-sided, no binding gutter, visible links.',
-  gutter: 0,
-  // No <w:type>: the digital PDF is read on screen, so forcing the document to
-  // begin on a recto page just produces a stray blank first page.
-  sectionType: null,
-  mirrorMargins: false,
-  evenAndOddHeaders: false,
+  description:
+    'Screen reading: twoside/openright, 0.2in binding gutter, visible blue links.',
   styleOverrides: {
     Hyperlink: {
       replace: true,
       body: hyperlinkStyle({ color: COLOR.link, underline: true }),
     },
   },
-  headers: [
-    { type: 'default', file: 'header1.xml', cells: RECTO_HEADER },
-    { type: 'first', file: 'header2.xml', cells: null },
-  ],
-  footers: [{ type: 'default', file: 'footer1.xml', cells: null }],
 };
 
 const print = {
   id: 'print',
-  description: 'Offset print: mirrored margins, 0.2in binding gutter, ink-only links.',
-  gutter: GUTTER,
-  sectionType: 'oddPage',
-  mirrorMargins: true,
-  evenAndOddHeaders: true,
+  description:
+    'Offset print: twoside/openright, 0.2in binding gutter, ink-only links.',
   styleOverrides: {
     Hyperlink: {
       replace: true,
       body: hyperlinkStyle({ color: 'auto', underline: false }),
     },
   },
-  headers: [
-    { type: 'default', file: 'header1.xml', cells: RECTO_HEADER },
-    { type: 'even', file: 'header2.xml', cells: VERSO_HEADER },
-    { type: 'first', file: 'header3.xml', cells: null },
-  ],
-  footers: [
-    { type: 'default', file: 'footer1.xml', cells: null },
-    { type: 'even', file: 'footer2.xml', cells: null },
-  ],
 };
 
 const VARIANTS = { digital, print };
@@ -741,6 +906,12 @@ function resolve(name) {
     }
   }
 
+  for (const key of ['id', 'description']) {
+    if (typeof variant[key] !== 'string' || !variant[key]) {
+      throw new Error(`docx-styles: variant "${name}" is missing a ${key}`);
+    }
+  }
+
   // Every style override must target a style the shared map or the pandoc
   // baseline actually knows about; a typo here would be inert XML.
   const styles = { ...shared.styles };
@@ -748,34 +919,36 @@ function resolve(name) {
     styles[id] = patch;
   }
 
-  const textWidth = PAGE.width - 2 * MARGIN - variant.gutter;
+  // A key absent from the delta falls through to `shared`. That fall-through is
+  // the whole point: it is what makes drift between the variants impossible
+  // rather than merely unlikely.
+  const merged = { ...shared, ...variant };
+  delete merged.styleOverrides;
+
+  const textWidth = PAGE.width - 2 * MARGIN - merged.gutter;
   const pageNumberCellWidth = shared.pageNumberCellWidth;
 
   return {
-    ...shared,
-    id: variant.id,
-    description: variant.description,
-    gutter: variant.gutter,
-    sectionType: variant.sectionType,
-    mirrorMargins: variant.mirrorMargins,
-    evenAndOddHeaders: variant.evenAndOddHeaders,
+    ...merged,
     styles,
-    headers: variant.headers,
-    footers: variant.footers,
     textWidth,
     /** Running-head table columns: [title column, page-number column]. */
     headerColumns: {
       pageNumber: pageNumberCellWidth,
       title: textWidth - pageNumberCellWidth,
     },
-    /** Extra settings.xml flags this variant needs, on top of settingsCommon. */
+    /**
+     * Extra settings.xml flags this variant needs, on top of settingsCommon.
+     * Read from `merged`, not from `variant`: these are shared values now, and
+     * reading the raw delta would silently emit neither.
+     */
     settingsExtra: [
-      variant.mirrorMargins
+      merged.mirrorMargins
         ? // NOT a sectPr child. In sectPr it is silently ignored; only in
           // settings.xml does it actually mirror the inner/outer margins.
           { xml: '<w:mirrorMargins/>', after: 'w:saveSubsetFonts' }
         : null,
-      variant.evenAndOddHeaders
+      merged.evenAndOddHeaders
         ? { xml: '<w:evenAndOddHeaders/>', after: 'w:defaultTabStop' }
         : null,
     ].filter(Boolean),
@@ -795,11 +968,14 @@ module.exports = {
   PAGE,
   MARGIN,
   GUTTER,
+  SECTION_TYPE,
+  CHAPTER_BREAK_STYLES,
   HEADER_FOOTER_DIST,
   SIZE,
   LINE,
   PARINDENT,
   COLOR,
+  LIST_MARKERS,
   THEME,
   DOC_DEFAULTS,
   STYLES,
