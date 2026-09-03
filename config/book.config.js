@@ -5,6 +5,22 @@
 
 const path = require('path');
 
+// Lua filter that renders callouts for the HTML-family writers (html5 + epub3).
+//
+// `anyOf` = candidate list, first existing wins. If NONE of the candidates exist the
+// build fails loudly (see BookBuilder.resolveFilters()); filters are never silently
+// skipped. The candidate list exists because the HTML/EPUB callout rendering may live
+// either in a dedicated callout-filter-html.lua or in callout-filter-digital.lua,
+// which carries both a LaTeX and an HTML branch.
+const CALLOUT_FILTER_HTML = {
+  anyOf: [
+    'book-builder/templates/filters/callout-filter-html.lua',
+    'book-builder/templates/filters/callout-filter-digital.lua'
+  ]
+};
+
+const LINK_FILTER = 'book-builder/templates/filters/link-filter.lua';
+
 module.exports = {
   // Book metadata
   book: {
@@ -24,6 +40,21 @@ module.exports = {
     introduction: 'introduction.md', // Introduction after foreword, before chapters
     chapters: ['ch[1-9].md'], // Main chapters (1-9)
     bibliography: 'references.json', // Bibliography database (CSL-JSON)
+
+    // References section. This section is GENERATED, it is not read from disk.
+    // build-book.js writes build/intermediate/<fileName> containing an unnumbered
+    // heading plus an empty `#refs` div. Pandoc's citeproc fills that div in place,
+    // which is what puts the bibliography after the chapters and before the
+    // appendices instead of dangling at the very end of the book with no heading.
+    // The old hand-maintained references.md at the book root is NOT used - it stays
+    // in excludePatterns below.
+    references: {
+      fileName: 'references.md', // written into build/intermediate/
+      title: 'References',
+      id: 'references',
+      unnumbered: true
+    },
+
     appendices: ['app[AB].md'], // Appendices (A-B only, others migrated to website)
     codebase: './codepromptu',
     images: './images',
@@ -105,7 +136,11 @@ module.exports = {
       format: 'epub3',
       standalone: true
     },
-    // Alias for 'digital' format
+    // Alias for 'digital'. It writes to the SAME directory as 'digital', so it must
+    // produce the same artefact - hence it repeats digital's defaultsFile rather than
+    // falling back to pandoc.defaultsFile (which declares a different filter chain and
+    // no pandoc-crossref). Kept only for backwards compatibility with `--target pdf`;
+    // it is deliberately NOT part of `--target all`, which builds digital + print.
     pdf: {
       directory: './build/digital', // Default to digital format
       codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
@@ -114,18 +149,53 @@ module.exports = {
       engine: 'xelatex',
       dpi: 300,
       pdfType: 'interactive',
-      standalone: true
+      standalone: true,
+      defaultsFile: 'book-builder/config/pandoc-defaults-digital.yaml'
     }
   },
 
+  // Targets built by `--target all` / `npm run build:all`.
+  // Must cover every artefact that publish:website copies, which includes
+  // build/print/constellize-book.pdf. The 'pdf' alias is excluded because it writes to
+  // build/digital and would just rebuild the same file twice.
+  allTargets: ['digital', 'print', 'web', 'development', 'epub'],
+
   // Pandoc configuration
   pandoc: {
+    // Fallback defaults file for any target that does not declare its own
+    // `defaultsFile` in `outputs` above. Every PDF target now declares one, so this is
+    // only a safety net.
     defaultsFile: 'book-builder/config/pandoc-defaults.yaml',
-    template: 'book-builder/templates/book.latex',
-    filters: [
-      'book-builder/templates/filters/callout-filter.lua',
-      'book-builder/templates/filters/link-filter.lua'
-    ],
+
+    // Pandoc templates, resolved per target. A target with no entry here gets no
+    // --template flag and therefore uses pandoc's built-in template for its format;
+    // that is deliberate for epub3. A configured template that does not exist on disk
+    // is a hard error (see BookBuilder.resolveTemplate()).
+    templates: {
+      digital: 'book-builder/templates/book-digital.latex',
+      pdf: 'book-builder/templates/book-digital.latex',
+      print: 'book-builder/templates/book-print.latex',
+      web: 'book-builder/templates/book-template.html5',
+      development: 'book-builder/templates/book-template.html5'
+      // epub: pandoc's built-in epub3 template
+    },
+
+    // Lua filters, resolved per target. Every target MUST have an entry; an unlisted
+    // target is a hard error rather than a silent "no filters" build.
+    //
+    // The PDF targets are intentionally empty: pandoc-defaults-digital.yaml and
+    // pandoc-defaults-print.yaml already declare their own `filters:` chains
+    // (pandoc-crossref, minted, the matching callout filter, link-filter, citeproc).
+    // Repeating them here would apply each filter twice.
+    filters: {
+      digital: [],
+      print: [],
+      pdf: [],
+      web: [CALLOUT_FILTER_HTML, LINK_FILTER],
+      development: [CALLOUT_FILTER_HTML, LINK_FILTER],
+      epub: [CALLOUT_FILTER_HTML, LINK_FILTER]
+    },
+
     metadata: 'book-builder/templates/metadata.yaml'
   },
 
@@ -232,7 +302,11 @@ module.exports = {
 
   // Build settings
   build: {
-    clean: true, // Clean build directory before building
+    // Default for the --clean flag. Cleaning is OPT-IN and is scoped to the current
+    // target's own output directory (build/<target>/), never the whole build/ tree:
+    // `--target all` runs one BookBuilder per target, so a whole-tree clean would
+    // delete every artefact except the last target's.
+    clean: false,
     verbose: false,
     parallel: true, // Process chapters in parallel where possible
     watch: false // Enable file watching in development

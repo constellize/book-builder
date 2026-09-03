@@ -95,17 +95,140 @@ a {
   text-decoration: none;
 }
 
-/* Callout boxes */
+/* --------------------------------------------------------------------------
+   Callout boxes.
+
+   THIS BLOCK IS AUTHORITATIVE for the epub target, and mirrors the callout
+   block in book-builder/templates/book-template.html5. The class names are the
+   contract with book-builder/templates/filters/callout-filter-digital.lua and
+   callout-filter-print.lua, which emit class names only -- no inline styles.
+
+   Structure emitted by the filters:
+
+     div.callout.callout-TYPE
+       div.callout-title
+       div.callout-content
+         ...body blocks...
+
+   TYPE is the fenced-div class: info | code | success | warning | error |
+   conversation | promptref.
+
+   Conversation callouts additionally emit, inside .callout-content:
+     div.callout-turn.callout-turn-{human,ai,reflection}
+       p > span.callout-speaker + message
+
+   Prompt-reference callouts additionally emit, inside .callout-content:
+     div.callout-preview   (the elided prompt text)
+     div.callout-link      (p > span.callout-link-label + <a href>)
+
+   Before this existed the epub had NO callout styling: the filters tested
+   `FORMAT:match "html"`, and FORMAT is "epub3" for an epub build, so every
+   callout fell through to a bare, unstyled <div>.
+
+   Everything here uses plain hex colours, em units and longhand properties --
+   no rgba(), no box-shadow, no flexbox -- because epub reading systems vary
+   widely in CSS support.
+   -------------------------------------------------------------------------- */
 .callout {
   margin: 1em 0;
-  padding: 0.75em;
-  border-left: 3px solid #666;
-  background: #f9f9f9;
+  padding: 0.75em 1em;
+  border-left: 3px solid #6c757d;
+  background: #f8f9fa;
+  page-break-inside: avoid;
+  break-inside: avoid;
 }
 
 .callout-title {
   font-weight: bold;
   margin-bottom: 0.5em;
+  color: #495057;
+}
+
+.callout-info { border-left-color: #0066cc; background: #f0f6fc; }
+.callout-info > .callout-title { color: #0a4f9e; }
+
+.callout-code { border-left-color: #6f42c1; background: #f6f4fb; }
+.callout-code > .callout-title { color: #59349b; }
+
+.callout-success { border-left-color: #28a745; background: #f2faf4; }
+.callout-success > .callout-title { color: #1b7a33; }
+
+.callout-warning { border-left-color: #ffc107; background: #fffbf0; }
+.callout-warning > .callout-title { color: #8a6100; }
+
+.callout-error { border-left-color: #dc3545; background: #fdf3f4; }
+.callout-error > .callout-title { color: #b02a37; }
+
+.callout-conversation { border-left-color: #20c997; background: #f2fcf9; }
+.callout-conversation > .callout-title { color: #0f7a5c; }
+
+.callout-promptref { border-left-color: #17a2b8; background: #f1f9fb; }
+.callout-promptref > .callout-title { color: #0d6c7d; }
+
+/* Conversation speaker turns */
+.callout-turn {
+  margin: 0.6em 0;
+  padding: 0.5em 0.7em;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.callout-turn p {
+  margin: 0;
+}
+
+.callout-turn-human { background: #e7f0fb; }
+.callout-turn-ai { background: #e8f6ec; }
+.callout-turn-reflection { background: #fdf1e3; font-style: italic; }
+
+.callout-speaker { font-weight: bold; }
+
+/* Prompt reference: elided preview text and the link footer. The preview is
+   italicised here rather than in the filter, so a preview already written as
+   *italic* in the source is not double-wrapped. */
+.callout-preview {
+  margin: 0.6em 0;
+  padding-left: 0.7em;
+  border-left: 2px solid #b8dde5;
+  font-style: italic;
+  color: #52606d;
+}
+
+.callout-preview p {
+  margin: 0;
+}
+
+.callout-link {
+  margin-top: 0.7em;
+}
+
+.callout-link p {
+  margin: 0;
+}
+
+.callout-link-label {
+  font-weight: bold;
+  color: #0d6c7d;
+  margin-right: 0.25em;
+}
+
+/* --------------------------------------------------------------------------
+   Repository links, emitted by
+   book-builder/templates/filters/link-filter.lua.
+
+   The "(lines 12-40)" annotation is generated from the filter's
+   data-start-line / data-end-line attributes rather than being baked into the
+   document AST. Generated content support is uneven across reading systems; if
+   a reader ignores ::after the link simply appears without the annotation.
+   -------------------------------------------------------------------------- */
+a.code-link[data-start-line]::after {
+  content: " (line " attr(data-start-line) ")";
+  font-size: 0.85em;
+  color: #6c757d;
+}
+
+a.code-link[data-start-line][data-end-line]::after {
+  content: " (lines " attr(data-start-line) "\2013" attr(data-end-line) ")";
 }
 
 /* Tables */

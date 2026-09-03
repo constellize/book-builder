@@ -11,9 +11,11 @@ pdf-engine-opts:
   - "-file-line-error"
 
 # Template and Styling
-template: book-builder/templates/book.latex
-
-
+# No `template:` key here on purpose. This file used to declare
+# `template: book-builder/templates/book.latex`, a file that does not exist; PDF builds
+# only survived because build-book.js passes an overriding --template on the command
+# line, and any non-PDF use of this defaults file died with "Could not find data file".
+# The template is chosen per target by pandoc.templates in book.config.js.
 
 # Image processing
 dpi: 300

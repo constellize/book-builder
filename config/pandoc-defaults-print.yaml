@@ -11,9 +11,9 @@ pdf-engine-opts:
   - "-file-line-error"
 
 # Template and Styling
-template: book-builder/templates/book.latex
-
-
+# No `template:` key here on purpose - it used to point at a non-existent
+# book-builder/templates/book.latex. build-book.js passes --template from
+# pandoc.templates in book.config.js (print -> templates/book-print.latex).
 
 # Image processing
 dpi: 300

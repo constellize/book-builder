@@ -11,9 +11,9 @@ pdf-engine-opts:
   - "-file-line-error"
 
 # Template and Styling
-template: book-builder/templates/book.latex
-
-
+# No `template:` key here on purpose - it used to point at a non-existent
+# book-builder/templates/book.latex. build-book.js passes --template from
+# pandoc.templates in book.config.js (digital -> templates/book-digital.latex).
 
 # Image processing
 dpi: 300
@@ -25,16 +25,20 @@ toc-depth: 3
 # Section numbering
 number-sections: true
 
-# Cross-references
-citeproc: true
-
 # Filters (processed in order) - Digital version with left-bar callouts
-# Note: pandoc-crossref must come before citeproc
+# Note: pandoc-crossref must come before citeproc.
+# citeproc MUST be listed here as the last filter, NOT declared as a top-level
+# `citeproc: true` key. A top-level key runs citeproc outside this ordered chain,
+# which lets pandoc-crossref revert Cite elements back to literal "[@key]" text.
+# That silently rendered all 28 citations raw in the digital PDF while still
+# emitting a correct bibliography, so page count and file size looked unchanged.
+# pandoc-defaults-print.yaml has always had this right - keep the two in sync.
 filters:
   - pandoc-crossref
   - book-builder/templates/filters/minted-filter.lua
   - book-builder/templates/filters/callout-filter-digital.lua
   - book-builder/templates/filters/link-filter.lua
+  - citeproc
 
 # Metadata
 metadata-files:

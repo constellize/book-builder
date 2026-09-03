@@ -23,7 +23,8 @@ class BookBuilder {
     this.options = {
       target: "development",
       verbose: false,
-      clean: true,
+      // Opt-in, and scoped to the target's own output directory - see cleanBuild().
+      clean: config.build.clean === true,
       ...options,
     };
 
@@ -159,11 +160,130 @@ class BookBuilder {
   }
 
   /**
-   * Clean the build directory
+   * Clean this target's output directory.
+   *
+   * Scoped deliberately. This used to remove the whole build/ tree, which is why it had
+   * to be left permanently disabled: `--target all` constructs one BookBuilder per
+   * target, so a whole-tree wipe before each target would leave only the last target's
+   * artefact behind and would also destroy artefacts the user had not just rebuilt.
+   * build/intermediate/ and build/assets/ are pure scratch and are refreshed on every
+   * build regardless of this flag (see processSourceFiles/processImages).
    */
   async cleanBuild() {
-    console.log(chalk.yellow("🧹 Cleaning build directory..."));
-    await fs.remove(this.buildDir);
+    const outputConfig = config.outputs[this.options.target];
+    const outputDir = path.resolve(this.rootDir, outputConfig.directory);
+    const outputPath = this.getOutputPath();
+
+    if (!(await fs.pathExists(outputDir))) {
+      return;
+    }
+
+    // Remove ONLY the artefact this target regenerates - never the directory.
+    // build/print/ also holds constellize-book-print-preview-2026.01.pdf, a hand-made
+    // artefact from 2026-01-03 that no build target reproduces; an fs.remove() of the
+    // directory would destroy it silently and unrecoverably. Anything the build does
+    // not own is reported and left alone.
+    if (await fs.pathExists(outputPath)) {
+      console.log(chalk.yellow(`🧹 Removing previous artefact: ${outputPath}`));
+      await fs.remove(outputPath);
+    }
+
+    const survivors = (await fs.readdir(outputDir)).filter(
+      (f) => f !== path.basename(outputPath) && f !== ".DS_Store"
+    );
+    if (survivors.length > 0) {
+      console.log(
+        chalk.gray(
+          `   Left untouched in ${outputDir} (not build-owned): ${survivors.join(", ")}`
+        )
+      );
+    }
+  }
+
+  /**
+   * Resolve the Pandoc template for the current target to an absolute path.
+   * Returns null when the target intentionally has no template (epub3 uses pandoc's
+   * built-in one). A configured-but-missing template is a hard error.
+   */
+  async resolveTemplate() {
+    const templates = (config.pandoc && config.pandoc.templates) || {};
+    const configured = templates[this.options.target];
+
+    if (!configured) {
+      return null;
+    }
+
+    const templatePath = path.resolve(this.rootDir, configured);
+    if (!(await fs.pathExists(templatePath))) {
+      throw new Error(
+        `Pandoc template not found for target "${this.options.target}": ${templatePath}\n` +
+          `Fix pandoc.templates in book-builder/config/book.config.js.`
+      );
+    }
+    return templatePath;
+  }
+
+  /**
+   * Resolve the Lua filters for the current target to absolute paths.
+   *
+   * A filter that cannot be found is a HARD ERROR. This code used to guard each filter
+   * with fs.pathExists and silently skip the ones it could not find, which is how
+   * pandoc.filters was able to point at a callout-filter.lua that had never existed:
+   * every HTML build quietly emitted unstyled callouts and still exited 0.
+   */
+  async resolveFilters() {
+    const spec = (config.pandoc && config.pandoc.filters) || {};
+    const forTarget = Array.isArray(spec) ? spec : spec[this.options.target];
+
+    if (!Array.isArray(forTarget)) {
+      throw new Error(
+        `No Lua filter list configured for target "${this.options.target}". ` +
+          `Add an entry to pandoc.filters in book-builder/config/book.config.js ` +
+          `(use [] when a target intentionally declares its filters elsewhere, ` +
+          `e.g. inside its pandoc defaults file).`
+      );
+    }
+
+    const resolved = [];
+
+    for (const entry of forTarget) {
+      let candidates = null;
+      if (typeof entry === "string") {
+        candidates = [entry];
+      } else if (entry && Array.isArray(entry.anyOf) && entry.anyOf.length > 0) {
+        candidates = entry.anyOf;
+      }
+
+      if (!candidates) {
+        throw new Error(
+          `Invalid pandoc.filters entry for target "${this.options.target}": ` +
+            `${JSON.stringify(entry)}. Expected a path string or { anyOf: [paths] }.`
+        );
+      }
+
+      let found = null;
+      for (const candidate of candidates) {
+        const candidatePath = path.resolve(this.rootDir, candidate);
+        if (await fs.pathExists(candidatePath)) {
+          found = candidatePath;
+          break;
+        }
+      }
+
+      if (!found) {
+        throw new Error(
+          `Lua filter not found for target "${this.options.target}". Looked for:\n` +
+            candidates
+              .map((c) => `  - ${path.resolve(this.rootDir, c)}`)
+              .join("\n") +
+            `\nFix pandoc.filters in book-builder/config/book.config.js.`
+        );
+      }
+
+      resolved.push(found);
+    }
+
+    return resolved;
   }
 
   /**
@@ -183,6 +303,13 @@ class BookBuilder {
    */
   async processSourceFiles() {
     console.log(chalk.yellow("📝 Processing source files..."));
+
+    // build/intermediate/ is pure scratch: everything in it is regenerated below from
+    // the sources. Reset it every build so a file left behind by an earlier config
+    // (a renamed chapter, a stale appendix) cannot leak into the next book.
+    const intermediateDir = path.join(this.buildDir, "intermediate");
+    await fs.remove(intermediateDir);
+    await fs.ensureDir(intermediateDir);
 
     const allFiles = [];
 
@@ -211,14 +338,9 @@ class BookBuilder {
       allFiles.push(...chapterFiles);
     }
 
-    // Add references after chapters if it exists
-    if (config.source.references) {
-      const referencesPath = path.resolve(this.rootDir, config.source.references);
-      if (await fs.pathExists(referencesPath)) {
-        allFiles.push(referencesPath);
-        console.log(chalk.gray("Added references"));
-      }
-    }
+    // Generate the References section between the chapters and the appendices.
+    // Nothing is read from disk here - see generateReferencesSection().
+    await this.generateReferencesSection();
 
     // Add appendices
     for (const pattern of config.source.appendices) {
@@ -233,6 +355,66 @@ class BookBuilder {
     for (const file of allFiles) {
       await this.processSourceFile(file);
     }
+  }
+
+  /**
+   * Generate the References section into build/intermediate/.
+   *
+   * This is synthesised, not copied. The hand-maintained references.md at the book root
+   * is superseded by references.json + citeproc and stays excluded.
+   *
+   * The generated file is a heading plus an EMPTY `#refs` div. Pandoc's citeproc fills
+   * a `#refs` div in place if the document has one, and only falls back to appending an
+   * auto-titled bibliography to the very end of the document when it does not. Without
+   * this file the bibliography dangled after the last paragraph of the final appendix.
+   * With it, the bibliography lands under a visible heading between the chapters and
+   * the appendices in PDF, HTML and EPUB alike.
+   *
+   * The heading is unnumbered so it does not become "Chapter 10" in the numbered PDF
+   * (\chapter* also gives the section its own page in the book class).
+   */
+  async generateReferencesSection() {
+    const refsConfig = config.source.references;
+    if (!refsConfig || !refsConfig.fileName) {
+      return;
+    }
+
+    // No bibliography database means nothing for citeproc to place - skip the section
+    // rather than emit an empty "References" heading.
+    const bibliographyPath = path.resolve(
+      this.rootDir,
+      (config.citations && config.citations.bibliography) ||
+        config.source.bibliography
+    );
+    if (!(await fs.pathExists(bibliographyPath))) {
+      console.log(
+        chalk.yellow(
+          `⚠️  Bibliography not found (${bibliographyPath}); skipping References section`
+        )
+      );
+      return;
+    }
+
+    const title = refsConfig.title || "References";
+    const id = refsConfig.id || "references";
+    const attrs = [`#${id}`];
+    if (refsConfig.unnumbered !== false) {
+      attrs.push(".unnumbered");
+    }
+
+    const content =
+      `# ${title} {${attrs.join(" ")}}\n` +
+      `\n` +
+      `::: {#refs}\n` +
+      `:::\n`;
+
+    const outputPath = path.join(
+      this.buildDir,
+      "intermediate",
+      refsConfig.fileName
+    );
+    await fs.writeFile(outputPath, content, "utf8");
+    console.log(chalk.gray(`Generated ${title} section (${refsConfig.fileName})`));
   }
 
   /**
@@ -470,6 +652,13 @@ class BookBuilder {
       
       // Only add --citeproc for non-PDF builds (PDF has it in defaults filters)
       if (!isPdfBuild) {
+        // pandoc-crossref MUST precede citeproc. Both claim `@`-prefixed keys, and
+        // whichever runs first wins. Without this, `@sec:...` cross-references are
+        // swallowed by citeproc and emitted as a dangling `#ref-sec:...` anchor with
+        // no matching bibliography entry - which is exactly what web and EPUB were
+        // doing while both PDFs resolved the same reference correctly.
+        // The PDF targets get pandoc-crossref from their defaults files instead.
+        pandocArgs.push("--filter=pandoc-crossref");
         pandocArgs.push("--citeproc");
       }
       
@@ -490,6 +679,11 @@ class BookBuilder {
     // Check if this is a PDF target (including new targets)
     const isPdfTarget = outputConfig.format === 'pdf';
 
+    // Template and Lua filters are resolved per target from book.config.js.
+    // Both resolvers throw if a configured file is missing - nothing is skipped.
+    const templatePath = await this.resolveTemplate();
+    const luaFilters = await this.resolveFilters();
+
     if (isPdfTarget) {
       // PDF-specific settings
       // Use target-specific defaults file if specified, otherwise use global defaults
@@ -500,16 +694,7 @@ class BookBuilder {
       pandocArgs.push(`--pdf-engine=${outputConfig.engine}`);
       pandocArgs.push(`--pdf-engine-opt=-shell-escape`); // Required for Minted syntax highlighting
       pandocArgs.push(`--dpi=${outputConfig.dpi}`);
-      
-      // Choose template based on PDF type
-      let templatePath;
-      if (outputConfig.pdfType === 'x1a' || this.options.target === 'print') {
-        templatePath = path.resolve(this.toolsDir, 'templates/book-print.latex');
-      } else {
-        templatePath = path.resolve(this.toolsDir, 'templates/book-digital.latex');
-      }
-      pandocArgs.push(`--template="${templatePath}"`);
-      
+
     } else if (outputConfig.format === 'epub3') {
       // EPUB-specific settings
       pandocArgs.push("--standalone");
@@ -527,24 +712,30 @@ class BookBuilder {
       // HTML-specific settings
       pandocArgs.push("--standalone");
       pandocArgs.push("--toc");
-      // Use custom HTML template with embedded CSS
-      const htmlTemplatePath = path.resolve(this.toolsDir, 'templates/book-template.html5');
-      pandocArgs.push(`--template="${htmlTemplatePath}"`);
       // Embed images as base64 data URIs
       pandocArgs.push("--embed-resources");
       // Include metadata file for version, copyright, disclaimer
       const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
       pandocArgs.push(`--metadata-file="${metadataPath}"`);
-
-      // Add filters for HTML
-      for (const filter of config.pandoc.filters) {
-        const filterPath = path.resolve(this.rootDir, filter);
-        if (await fs.pathExists(filterPath)) {
-          pandocArgs.push(`--lua-filter="${filterPath}"`);
-        }
-      }
     }
-    
+
+    // Template, if the target has one (epub3 uses pandoc's built-in template).
+    // For PDF targets this also overrides whatever `template:` the defaults file
+    // declares, which is why the defaults files no longer declare one at all.
+    if (templatePath) {
+      pandocArgs.push(`--template="${templatePath}"`);
+    }
+
+    // Lua filters. Pushed after --citeproc on purpose: citeproc must resolve citations
+    // and fill the #refs div BEFORE the callout filter converts callout bodies into raw
+    // HTML/LaTeX blocks that later filters can no longer see into.
+    for (const filterPath of luaFilters) {
+      if (this.options.verbose) {
+        console.log(chalk.gray(`Lua filter: ${filterPath}`));
+      }
+      pandocArgs.push(`--lua-filter="${filterPath}"`);
+    }
+
     // Pass repository URL patterns to filters via metadata (for link detection)
     // Extract domain/path patterns from the full URLs in config
     const codepromptuPattern = config.repository.codepromptuBaseUrl.replace(/^https?:\/\//, '').replace(/\/blob\/main$/, '');
@@ -612,8 +803,11 @@ class BookBuilder {
       }
     }
 
-    // Add references after chapters but before appendices
-    const referencesFile = path.join(intermediateDir, "references.md");
+    // Add the generated References section after the chapters but before the appendices
+    const referencesName =
+      (config.source.references && config.source.references.fileName) ||
+      "references.md";
+    const referencesFile = path.join(intermediateDir, referencesName);
     if (await fs.pathExists(referencesFile)) {
       files.push(referencesFile);
     }
@@ -664,15 +858,30 @@ program
   .version("1.0.0")
   .option(
     "-t, --target <target>",
-    "build target (web, pdf, development, epub, all)",
+    "build target (digital, print, web, development, epub, pdf, all)",
     "development"
   )
   .option("-v, --verbose", "verbose output", false)
-  .option("--no-clean", "skip cleaning build directory", false)
+  // Cleaning is opt-in and scoped to the target's own output directory. `--no-clean` is
+  // kept so existing invocations keep working; it is now simply the default. Declaring
+  // --clean first is what stops commander flipping the default back to true.
+  .option(
+    "--clean",
+    "remove this target's output directory before building",
+    config.build.clean === true
+  )
+  .option("--no-clean", "do not remove the output directory (default)")
   .action(async (options) => {
     if (options.target === "all") {
-      // Build all targets
-      const targets = ["web", "pdf", "development", "epub"];
+      // Build every published target. Must include BOTH pdf variants: publish:website
+      // copies build/digital/constellize-book.pdf AND build/print/constellize-book.pdf.
+      const targets = config.allTargets || [
+        "digital",
+        "print",
+        "web",
+        "development",
+        "epub",
+      ];
       for (const target of targets) {
         const builder = new BookBuilder({ ...options, target });
         await builder.build();

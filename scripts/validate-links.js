@@ -12,6 +12,15 @@ const chalk = require('chalk');
 
 const config = require('../config/book.config.js');
 
+/**
+ * True if `pattern` contains any glob metacharacter and must be expanded by glob
+ * rather than treated as a literal filename. Covers '*', '?', character classes
+ * '[...]' and brace expansion '{...}'.
+ */
+function isGlobPattern(pattern) {
+  return /[*?]/.test(pattern) || /\[.*\]/.test(pattern) || /\{.*\}/.test(pattern);
+}
+
 class LinkValidator {
   constructor() {
     this.rootDir = config.source.root;
@@ -22,18 +31,26 @@ class LinkValidator {
   async validate() {
     console.log(chalk.blue('🔗 Validating links in book files...'));
     
-    // Find all markdown files
+    // Find all markdown files.
+    // NOTE: config.source.introduction was missing here, so introduction.md was
+    // never link-checked.
     const patterns = [
       config.source.foreword,
+      config.source.introduction,
       ...config.source.chapters,
       ...config.source.appendices
     ].filter(Boolean);
-    
+
     const allFiles = [];
     for (const pattern of patterns) {
-      if (pattern.includes('*')) {
+      // NOTE: this used to test only for '*'. The real patterns are 'ch[1-9].md'
+      // and 'app[AB].md', which contain no '*', so they fell through to the
+      // literal-path branch, fs.pathExists('/.../ch[1-9].md') returned false, and
+      // all 9 chapters plus both appendices were silently skipped -- the gate was
+      // only ever checking foreword-faq.md. Detect every glob metacharacter.
+      if (isGlobPattern(pattern)) {
         const files = glob.sync(path.resolve(this.rootDir, pattern));
-        allFiles.push(...files);
+        allFiles.push(...files.sort());
       } else {
         const file = path.resolve(this.rootDir, pattern);
         if (await fs.pathExists(file)) {
@@ -41,7 +58,7 @@ class LinkValidator {
         }
       }
     }
-    
+
     console.log(chalk.gray(`Found ${allFiles.length} files to validate`));
     
     for (const file of allFiles) {

@@ -267,33 +267,181 @@ function generateLatexCallout(calloutType, content, elem)
   return pandoc.RawBlock("latex", latex)
 end
 
--- Generate HTML callout box (no emojis)
+-- ============================================================================
+-- BEGIN SHARED HTML/EPUB BLOCK
+-- ----------------------------------------------------------------------------
+-- This block is byte-identical in callout-filter-digital.lua and
+-- callout-filter-print.lua. Those two filters are meant to differ ONLY in their
+-- LaTeX bodies; if you edit anything between the BEGIN/END markers, copy the
+-- whole block into the sibling file so the two cannot drift.
+--
+-- Design decisions:
+--  * We build real pandoc AST (Div / Span / Link) instead of
+--    RawBlock("html", ...). Raw HTML *does* survive into epub3 (verified with
+--    pandoc 3.8.3), but it then has to be hand-written as valid XHTML and has
+--    to escape its own text. Emitting AST lets pandoc's html5 and epub3 writers
+--    do both correctly, and keeps titles/URLs containing & or < safe.
+--  * The filter emits CLASS NAMES ONLY -- no inline styles. Every visual
+--    property lives in templates/book-template.html5 (web, development) and
+--    styles/epub.css (epub). Those two files are the single source of truth for
+--    callout appearance.
+--  * Class contract:
+--      div.callout.callout-<type>
+--        > div.callout-title
+--        > div.callout-content
+--    where <type> is the fenced-div class: info, code, success, warning, error,
+--    conversation, promptref. Conversation turns add
+--    div.callout-turn.callout-turn-{human,ai,reflection} with span.callout-speaker.
+--    Prompt references add div.callout-preview and
+--    div.callout-link > span.callout-link-label + <a>.
+-- ============================================================================
+
+-- Writers that consume the HTML class contract above.
+-- Verified with pandoc 3.8.3: FORMAT is exactly "html", "html5", "epub",
+-- "epub3", "chunkedhtml", ... so `FORMAT:match "html"` on its own misses every
+-- epub writer, which is why epub previously got no callout treatment at all.
+function isHtmlFamily(fmt)
+  return fmt:match("html") ~= nil or fmt:match("epub") ~= nil
+end
+
+-- Standard callout container.
+function buildCalloutDiv(calloutType, titleInlines, bodyBlocks)
+  local blocks = {}
+  if titleInlines and #titleInlines > 0 then
+    table.insert(blocks, pandoc.Div(
+      { pandoc.Plain(titleInlines) },
+      pandoc.Attr("", { "callout-title" })
+    ))
+  end
+  table.insert(blocks, pandoc.Div(
+    bodyBlocks,
+    pandoc.Attr("", { "callout-content" })
+  ))
+  return pandoc.Div(blocks, pandoc.Attr("", { "callout", "callout-" .. calloutType }))
+end
+
+-- Inlines following a leading bold speaker marker. HTML twin of
+-- extractMessageAfterMarker(), which returns rendered LaTeX source instead.
+function extractMessageInlines(para)
+  local start_idx = 2
+  if #para.content > 1 and para.content[2].t == "Space" then
+    start_idx = 3
+  end
+
+  local inlines = {}
+  for i = start_idx, #para.content do
+    table.insert(inlines, para.content[i])
+  end
+  return inlines
+end
+
+-- Generic HTML/EPUB callout: title from the callouts table, content verbatim.
 function generateHtmlCallout(calloutType, content)
   local config = callouts[calloutType]
   if not config then
     return nil
   end
-  
-  local html = string.format([[
-<div class="callout callout-%s" style="border-left: 4px solid %s; background-color: %s10; padding: 1rem; margin: 1rem 0;">
-  <div class="callout-title" style="font-weight: bold; color: %s; margin-bottom: 0.5rem;">
-    %s
-  </div>
-  <div class="callout-content">
-]], config.style, config.htmlcolor, config.htmlcolor, config.htmlcolor, config.title)
-  
-  -- Add content
-  for _, block in ipairs(content) do
-    html = html .. pandoc.write(pandoc.Pandoc({block}), "html") .. "\n"
-  end
-  
-  html = html .. [[
-  </div>
-</div>
-]]
-  
-  return pandoc.RawBlock("html", html)
+
+  return buildCalloutDiv(calloutType, { pandoc.Str(config.title) }, content)
 end
+
+-- HTML/EPUB twin of generateConversationCallout(): preserves the speaker-turn
+-- structure that the LaTeX version builds out of nested tcolorboxes, so web and
+-- epub readers get the same Human / AI / Reflection framing as the PDFs.
+function generateHtmlConversationCallout(content)
+  local speakers = {
+    { marker = "Human",      slug = "human",      label = "Human:",      italic = false },
+    { marker = "AI",         slug = "ai",         label = "AI:",         italic = false },
+    { marker = "Reflection", slug = "reflection", label = "Reflection:", italic = true  }
+  }
+
+  local body = {}
+  for _, block in ipairs(content) do
+    local matched = nil
+    if block.t == "Para" then
+      for _, speaker in ipairs(speakers) do
+        if startsWithBoldMarker(block, speaker.marker) then
+          matched = speaker
+          break
+        end
+      end
+    end
+
+    if matched then
+      local message = extractMessageInlines(block)
+      if matched.italic then
+        message = { pandoc.Emph(message) }
+      end
+
+      local inlines = {
+        pandoc.Span({ pandoc.Str(matched.label) }, pandoc.Attr("", { "callout-speaker" })),
+        pandoc.Space()
+      }
+      for _, inline in ipairs(message) do
+        table.insert(inlines, inline)
+      end
+
+      table.insert(body, pandoc.Div(
+        { pandoc.Para(inlines) },
+        pandoc.Attr("", { "callout-turn", "callout-turn-" .. matched.slug })
+      ))
+    else
+      -- Non-speaker blocks (narration, lists, code) pass through untouched.
+      table.insert(body, block)
+    end
+  end
+
+  return buildCalloutDiv("conversation", { pandoc.Str(callouts.conversation.title) }, body)
+end
+
+-- HTML/EPUB twin of generatePromptRefCallout(). Mirrors the LaTeX anatomy:
+--   title  = prompt name, taken from the div's `title` attribute
+--   body   = description blocks; when there is more than one block the last one
+--            is the elided prompt preview and is rendered in italics
+--   footer = "Link: <prompt name>" as a real anchor on the div's `url`
+-- Before this existed the HTML path called generateHtmlCallout() without `elem`,
+-- so all 67 prompt names and URLs in the book were silently dropped from web
+-- and epub output.
+function generateHtmlPromptRefCallout(content, elem)
+  local promptName = elem.attributes.title or callouts.promptref.title
+  local promptUrl = elem.attributes.url or "#"
+
+  local body = {}
+  local numBlocks = #content
+
+  if numBlocks > 1 then
+    -- Multiple blocks: description is all but last, preview is last.
+    for i = 1, numBlocks - 1 do
+      table.insert(body, content[i])
+    end
+
+    -- The preview is italicised by CSS (.callout-preview), not by wrapping it in
+    -- an Emph here: most previews are already written as *italic* in the source,
+    -- and wrapping again produced <em><em>...</em></em>.
+    table.insert(body, pandoc.Div(
+      { content[numBlocks] },
+      pandoc.Attr("", { "callout-preview" })
+    ))
+  else
+    -- Single block: treat as description only.
+    for _, block in ipairs(content) do
+      table.insert(body, block)
+    end
+  end
+
+  table.insert(body, pandoc.Div({
+    pandoc.Para({
+      pandoc.Span({ pandoc.Str("Link:") }, pandoc.Attr("", { "callout-link-label" })),
+      pandoc.Space(),
+      pandoc.Link({ pandoc.Str(promptName) }, promptUrl)
+    })
+  }, pandoc.Attr("", { "callout-link" })))
+
+  return buildCalloutDiv("promptref", { pandoc.Str(promptName) }, body)
+end
+-- ============================================================================
+-- END SHARED HTML/EPUB BLOCK
+-- ============================================================================
 
 -- Main filter function for Div elements (fenced divs like ::: info)
 function Div(elem)
@@ -320,8 +468,16 @@ function Div(elem)
     else
       return generateLatexCallout(calloutType, elem.content, elem)
     end
-  elseif FORMAT:match "html" then
-    return generateHtmlCallout(calloutType, elem.content)
+  elseif isHtmlFamily(FORMAT) then
+    -- Same dispatch shape as the LaTeX branch above: conversation and promptref
+    -- have dedicated renderers, everything else uses the generic box.
+    if calloutType == "conversation" then
+      return generateHtmlConversationCallout(elem.content)
+    elseif calloutType == "promptref" then
+      return generateHtmlPromptRefCallout(elem.content, elem)
+    else
+      return generateHtmlCallout(calloutType, elem.content)
+    end
   else
     -- For other formats, return enhanced div
     return elem

@@ -20,24 +20,27 @@ const results = {};
 for (const target of TARGETS) {
   console.log(`📖 Building ${target} version...`);
   
+  // NOTE: buildStart must be declared OUTSIDE the try block. It is read by the
+  // catch handler, and a `const` declared inside `try` is not in scope there --
+  // referencing it threw a ReferenceError that replaced the real build error.
+  const buildStart = Date.now();
+
   try {
-    const buildStart = Date.now();
-    
     // Execute the build command
     execSync(`node scripts/build-book.js --target ${target}`, {
       cwd: path.resolve(__dirname, '..'),
       stdio: 'inherit'
     });
-    
+
     const buildTime = Date.now() - buildStart;
     results[target] = { success: true, time: buildTime };
-    
+
     console.log(`✅ ${target} version completed in ${(buildTime / 1000).toFixed(1)}s\n`);
-    
+
   } catch (error) {
     const buildTime = Date.now() - buildStart;
     results[target] = { success: false, time: buildTime, error: error.message };
-    
+
     console.error(`❌ ${target} version failed after ${(buildTime / 1000).toFixed(1)}s`);
     console.error(`Error: ${error.message}\n`);
   }
