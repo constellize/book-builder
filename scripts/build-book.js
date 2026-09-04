@@ -928,16 +928,23 @@ class BookBuilder {
     // ------------------------------------------------------------------
     // docx post-processing. NOT OPTIONAL.
     //
-    // Pandoc's docx writer offers no way to (a) start each chapter on a recto page or
-    // (b) point list markers at the embedded Atkinson faces. docx-postprocess.js patches
-    // both into word/document.xml and word/numbering.xml after the fact - it clones the
-    // sectPr pandoc actually wrote rather than inventing one, so it stays correct if the
-    // reference doc's page setup changes.
+    // Pandoc's docx writer offers no way to (a) start each chapter on a recto page,
+    // (b) point list markers at the embedded Atkinson faces, or (c) give the table of
+    // contents field a cached result. docx-postprocess.js patches all three into
+    // word/document.xml, word/numbering.xml and word/styles.xml after the fact - it
+    // clones the sectPr pandoc actually wrote rather than inventing one, so it stays
+    // correct if the reference doc's page setup changes.
     //
     // If this call is removed or silently swallowed, the .docx still opens, still has
-    // every chapter, and is still the right size. It simply loses openright and renders
-    // bullets in Symbol. That is exactly the class of failure this whole pipeline keeps
-    // producing, so any error here fails the build loudly instead of warning.
+    // every chapter, and is still the right size. It simply loses openright, renders
+    // bullets in Symbol, and shows a BLANK Contents page. That is exactly the class of
+    // failure this whole pipeline keeps producing, so any error here fails the build
+    // loudly instead of warning.
+    //
+    // The TOC's page numbers are the one part that needs Microsoft Word (it is the only
+    // thing on this machine that can paginate the document). That dependency is SOFT by
+    // design: without Word the build still succeeds and ships a fully clickable Contents
+    // with no page numbers, and says so. See the TOC section of docx-postprocess.js.
     // ------------------------------------------------------------------
     if (isDocxTarget) {
       const variant = this.docxVariant();
@@ -947,6 +954,8 @@ class BookBuilder {
         result = postProcessDocx({
           docxPath: outputPath,
           variant,
+          // commander turns `--no-toc-page-numbers` into tocPageNumbers === false.
+          tocPageNumbers: this.options.tocPageNumbers === false ? "never" : "auto",
           log: (msg) => console.log(chalk.gray(`   ${msg}`)),
         });
       } catch (error) {
@@ -961,7 +970,9 @@ class BookBuilder {
           `   ${result.sections} chapter section break(s), ` +
             `${result.levels} numbering level(s) patched ` +
             `(${result.bullets} bullet, ${result.ordered} ordered), ` +
-            `${(result.bytes / 1024).toFixed(1)} KiB`
+            `${result.toc.entries} TOC entries` +
+            (result.toc.pageNumbers ? " with page numbers" : " WITHOUT page numbers") +
+            `, ${(result.bytes / 1024).toFixed(1)} KiB`
         )
       );
 
@@ -973,6 +984,22 @@ class BookBuilder {
           `docx post-processing inserted 0 chapter section breaks into ${outputPath}. ` +
             `Expected one per chapter. Check that pandoc is still emitting Heading1 ` +
             `paragraphs and that config/docx-styles.js matches the reference document.`
+        );
+      }
+
+      // A Contents with no page numbers is a legitimate, shippable degradation - but it
+      // is NOT what this target is for, and it must never pass unremarked. Loud, with
+      // the reason and the one command that fixes it.
+      if (!result.toc.pageNumbers) {
+        console.warn(
+          chalk.yellow(
+            `\n⚠  The Contents in ${outputPath} has working links but NO PAGE NUMBERS.\n` +
+              `   Reason: ${result.toc.warning}\n` +
+              `   The book is complete and shippable; only the page numbers are missing.\n` +
+              `   To add them, make Microsoft Word available and re-run:\n` +
+              `     node book-builder/scripts/lib/docx-postprocess.js ${outputPath} --variant ${variant}\n` +
+              `   Or, in Word: Ctrl-A then F9 updates every field by hand.\n`
+          )
         );
       }
     }
@@ -1082,6 +1109,17 @@ program
     config.build.clean === true
   )
   .option("--no-clean", "do not remove the output directory (default)")
+  // docx targets only. The Contents page numbers are computed by asking Word to
+  // paginate the document; there is nothing else on any platform that can. That
+  // dependency is soft - without Word the build ships a fully clickable Contents
+  // with no page numbers and says so - and this flag makes the same choice
+  // deliberately, which is what a CI run that has Word installed but does not want
+  // to pay 6s (or drive a GUI app) should use.
+  .option(
+    "--no-toc-page-numbers",
+    "docx targets: skip the Word pagination step; ship a Contents with working " +
+      "links but no page numbers"
+  )
   .action(async (options) => {
     if (options.target === "all") {
       // Build every published target. Must include BOTH pdf variants and BOTH docx

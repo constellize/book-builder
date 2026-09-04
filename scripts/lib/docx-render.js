@@ -245,10 +245,21 @@ function docxFieldInfo(docxPath) {
   const r = run('/usr/bin/unzip', ['-p', docxPath, 'word/document.xml']);
   if (r.code !== 0) return { readable: false, hasFields: false, hasToc: false };
   const xml = r.out;
+  const hasToc = /TOC\s+\\/.test(xml) || /w:instrText[^>]*>\s*TOC/.test(xml);
   return {
     readable: true,
     hasFields: /<w:(fldChar|instrText|fldSimple)/.test(xml),
-    hasToc: /TOC\s+\\/.test(xml) || /w:instrText[^>]*>\s*TOC/.test(xml),
+    hasToc,
+    /**
+     * Does the TOC field carry a CACHED RESULT, or is it the empty shell pandoc
+     * writes? This is the difference between "LibreOffice will render an empty
+     * Contents" and "LibreOffice will render the Contents perfectly well",
+     * because a cached result is just text: no engine has to compute anything.
+     * Counted as TOC1-3 entry paragraphs, which is what the cache is made of.
+     */
+    tocCacheEntries: hasToc
+      ? (xml.match(/<w:pStyle w:val="TOC[123]"\s*\/>/g) || []).length
+      : 0,
   };
 }
 
@@ -544,24 +555,52 @@ function recoverPrefJournal() {
   };
 }
 
-function buildWordScript(stagedDocx, stagedPdf, docName) {
+function buildWordScript(stagedDocx, stagedPdf, docName, updateFields) {
   // `open` is invoked as a statement, not as `set d to open ...`: Word's
   // implementation returns no Apple event result despite what its sdef claims,
   // so the assignment form leaves d undefined and the next line dies with -2753.
   // The document is picked up by name instead -- safe because the name is our
   // own unique tag, and because `save as ... format PDF` leaves the open
   // document still named <tag>.docx (verified).
-  return `
-tell application "Microsoft Word"
-    open (POSIX file "${asQuote(stagedDocx)}") confirm conversions false add to recent files false
-    set d to document "${asQuote(docName)}"
-    try
-        -- The preference is off, so Word will not update fields on its own.
-        -- Do explicitly what the suppressed prompt was asking permission to do.
-        repeat with i from 1 to (count of fields of d)
-            update field (field i of d)
-        end repeat
-        repeat with i from 1 to (count of tables of contents of d)
+  //
+  // -------------------------------------------------------------------------
+  // THERE USED TO BE A `repeat with i from 1 to (count of fields of d)` LOOP
+  // HERE THAT UPDATED EVERY FIELD BY INDEX. IT IS GONE, AND IT MUST STAY GONE.
+  // -------------------------------------------------------------------------
+  // It was sound only while the document carried exactly ONE field (pandoc's
+  // empty TOC). Every build now ships a POPULATED TOC -- 160 fields, one TOC
+  // plus one PAGEREF per entry, see docx-postprocess.js. Updating any field
+  // inside a table of contents makes Word rebuild the whole field collection,
+  // so the loop index goes stale mid-flight and Word dies with
+  //     Can't make missing value into type integer (-1700)
+  // after ~200s, producing nothing at all. Measured on the real book.
+  //
+  // The loop was also redundant: it counted 435 fields on the real book (160 in
+  // the body, the rest are the hyperlinks Word materialises as HYPERLINK
+  // fields), and the only ones that ever needed updating are the TOC, its
+  // PAGEREFs and the STYLEREF/PAGE fields in the running heads. Dropping the
+  // loop took the same work from 199s to 5.4s.
+  //
+  // -------------------------------------------------------------------------
+  // WHY `updateFields` DEFAULTS TO FALSE
+  // -------------------------------------------------------------------------
+  // A render is a PROOF of a .docx, and a proof must show what the file
+  // contains. Updating the TOC on the way to PDF is precisely how the blank
+  // Contents survived for the whole life of this target: the shipped file had
+  // an empty cached field result, every PDF was rendered with that result
+  // rebuilt, and so every PDF looked right while every reader saw a blank page.
+  // The artefact that was checked was not the artefact that shipped.
+  //
+  // Not updating costs nothing that matters. Measured on the real book rendered
+  // with no update at all: the running heads still read "Before You Ask" and
+  // the folios still count 1, 2, 3 - PAGE and STYLEREF are evaluated during
+  // layout whether or not anything asked them to be. Only the TOC's cached
+  // result is taken from the file, which is the entire point.
+  //
+  // Pass updateFields:true (docx-to-pdf.js --update-fields) to rebuild the TOC
+  // anyway. That is the right mode for a document that has no cache yet.
+  const updateBlock = updateFields
+    ? `        repeat with i from 1 to (count of tables of contents of d)
             update (table of contents i of d)
         end repeat
         repeat with i from 1 to (count of tables of figures of d)
@@ -573,12 +612,79 @@ tell application "Microsoft Word"
         repeat with i from 1 to (count of tables of contents of d)
             update page numbers (table of contents i of d)
         end repeat
-        save as d file name "${asQuote(stagedPdf)}" file format format PDF
+`
+    : `        -- Deliberately updating NOTHING: this PDF must show the field
+        -- results that are actually in the file. repaginate only lays out.
+        repaginate d
+`;
+
+  return `
+tell application "Microsoft Word"
+    open (POSIX file "${asQuote(stagedDocx)}") confirm conversions false add to recent files false
+    set d to document "${asQuote(docName)}"
+    try
+${updateBlock}        save as d file name "${asQuote(stagedPdf)}" file format format PDF
         close d saving no
     on error errMsg number errNum
         try
             close document "${asQuote(docName)}" saving no
         end try
+        error errMsg number errNum
+    end try
+end tell
+`.trim();
+}
+
+/**
+ * The TOC page-number oracle: Word paginates OUR document and tells us where
+ * every heading landed. It does not get to write anything we ship.
+ *
+ * `save as ... format document default` is .docx (plain `format document` is
+ * legacy .doc). The saved package is read for its PAGEREF results and then
+ * deleted — Word's own re-save is unusable as a shipping artefact because it
+ * destroys the font embedding (measured: 8 embedded faces -> 6, none
+ * byte-identical, the entire Atkinson Hyperlegible Next family dropped because
+ * it happens to be installed on this machine, plus 1.2MB of Times New Roman
+ * added and one image lost).
+ *
+ * NOTE WHAT IS *NOT* HERE: `update (table of contents i of d)`. We do not ask
+ * Word to rebuild the field, only to recompute the page numbers inside the
+ * cache docx-postprocess.js already built. That is the difference between
+ * measuring the document we ship and measuring a document Word invented:
+ * a rebuild re-emits every entry with Word's own direct formatting
+ * (`w:rFonts asciiTheme="minorHAnsi"`, `w:sz w:val="24"`) and its own
+ * `_TocNNNNNNNNN` bookmarks, so the Contents it paginates is not the Contents
+ * the reader gets. Updating page numbers alone leaves our paragraphs, our
+ * TOC1-3 styles and our pandoc anchors untouched, which makes the measurement
+ * exact by construction rather than by luck.
+ *
+ * After `save as` the variable `d` refers to a renamed document, so
+ * `close d saving no` fails; documents are closed by name match instead.
+ */
+function buildTocOracleScript(stagedDocx, stagedOut, docName, tagPrefix) {
+  return `
+tell application "Microsoft Word"
+    open (POSIX file "${asQuote(stagedDocx)}") confirm conversions false add to recent files false
+    set d to document "${asQuote(docName)}"
+    try
+        repaginate d
+        set tc to (count of tables of contents of d)
+        repeat with i from 1 to tc
+            update page numbers (table of contents i of d)
+        end repeat
+        save as d file name "${asQuote(stagedOut)}" file format format document default
+        repeat with i from (count of documents) to 1 by -1
+            try
+                if (name of document i) contains "${asQuote(tagPrefix)}" then close document i saving no
+            end try
+        end repeat
+        return ("tocs=" & tc)
+    on error errMsg number errNum
+        repeat with i from (count of documents) to 1 by -1
+            try
+                if (name of document i) contains "${asQuote(tagPrefix)}" then close document i saving no
+            end try
+        end repeat
         error errMsg number errNum
     end try
 end tell
@@ -662,10 +768,15 @@ function sweepStaleStage() {
  * "update links at open" preference. When it is off and the preference is in
  * the prompting state, this throws NEEDS_PREF with the exact instruction rather
  * than hanging on a modal.
+ *
+ * opts.updateFields (default FALSE) — rebuild the tables of contents/figures
+ * before exporting. Off by default so the PDF is a faithful proof of the .docx;
+ * see buildWordScript() for the defect that behaviour let through.
  */
 function renderWord(input, output, opts = {}) {
   const timeoutMs = opts.timeoutMs || 180000;
   const allowPrefToggle = opts.allowPrefToggle !== false;
+  const updateFields = opts.updateFields === true;
   const notes = [];
 
   checkWordInstalled();
@@ -741,8 +852,9 @@ function renderWord(input, output, opts = {}) {
       notes.push({ kind: 'pref-toggled', from: original, to: false });
     }
 
-    const script = buildWordScript(stagedDocx, stagedPdf, `${t}.docx`);
+    const script = buildWordScript(stagedDocx, stagedPdf, `${t}.docx`, updateFields);
     result = osa(script, timeoutMs);
+    notes.push({ kind: 'fields', updated: updateFields });
   } finally {
     if (willToggle) {
       const ok = writeUpdateLinksPref(original);
@@ -795,6 +907,161 @@ function renderWord(input, output, opts = {}) {
     // On the happy path the script already closed the document; only pay for
     // the extra round-trip when something went wrong and it may still be open.
     if (!closedCleanly) closeStagedDocs(t);
+    cleanup();
+  }
+}
+
+/**
+ * Ask Word where every heading landed, without letting it touch the shipped file.
+ *
+ * Stage 2 of the three-stage TOC cache; stages 1 and 3 are pure Node and live in
+ * docx-postprocess.js. `input` must already carry a built TOC cache whose
+ * PAGEREF results are blank — Word fills them in and we read them back out.
+ *
+ * The staging, the "update links at open" journal and the stale-stage sweep are
+ * the same defences renderWord() uses and are documented at the top of this
+ * file; only the AppleScript differs.
+ *
+ * NEVER THROWS FOR AN ENVIRONMENTAL REASON. Word missing, Word wedged, Word
+ * timing out and Word refusing the preference are all reported as
+ * `{ ok: false, reason }`, because a docx build must not become impossible on a
+ * machine with no GUI Word. The caller degrades to a page-number-free Contents.
+ * Only a programming error (a missing argument) throws.
+ *
+ * @param {string} input .docx carrying a blank-numbered TOC cache
+ * @param {string} output where to write Word's re-saved .docx (read, then deleted)
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=900000]
+ * @param {boolean} [opts.allowPrefToggle=true]
+ * @returns {{ok: true, output: string, ms: number, notes: object[]}
+ *          |{ok: false, reason: string, hint: string|null, ms: number, notes: object[]}}
+ */
+function updateTocCache(input, output, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 900000;
+  const allowPrefToggle = opts.allowPrefToggle !== false;
+  const notes = [];
+  const started = Date.now();
+  const fail = (reason, hint = null) => ({
+    ok: false,
+    reason,
+    hint,
+    ms: Date.now() - started,
+    notes,
+  });
+
+  if (!wordAvailable()) {
+    return fail(
+      `Microsoft Word is not installed at ${WORD_APP}`,
+      'This is expected on CI and on Linux; nothing is wrong with the build.'
+    );
+  }
+
+  // wakeWord() RETURNS THE DOCUMENT COUNT and THROWS on failure. Zero open
+  // documents is the normal case and is falsy, so this must test the throw, not
+  // the return value.
+  try {
+    wakeWord(Math.min(timeoutMs, 90000));
+  } catch (err) {
+    return fail(
+      err instanceof RenderError ? err.message : String(err && err.message),
+      (err && err.hint) || 'Quit Word (pkill -9 -x "Microsoft Word") and re-run.'
+    );
+  }
+
+  const recovery = recoverPrefJournal();
+  if (recovery) notes.push({ kind: 'pref-recovery', ...recovery });
+
+  const original = readUpdateLinksPref();
+  if (original === null) {
+    return fail(
+      'Word answered the document count but not the settings query',
+      'Quit and reopen Word, then re-run.'
+    );
+  }
+  if (original === true && !allowPrefToggle) {
+    return fail(
+      'Word would show the "fields that may refer to other files" prompt',
+      `Turn OFF ${PREF_UI_PATH}, or allow this build to flip it for the duration of the run.`
+    );
+  }
+  const willToggle = original === true && allowPrefToggle;
+
+  fs.ensureDirSync(WORD_STAGE);
+  const swept = sweepStaleStage();
+  if (swept) notes.push({ kind: 'stage-swept', removed: swept });
+  const t = tag();
+  const stagedDocx = path.join(WORD_STAGE, `${t}.docx`);
+  const stagedOut = path.join(WORD_STAGE, `${t}-toc.docx`);
+  fs.copySync(input, stagedDocx);
+
+  const cleanup = () => {
+    const tail = t.slice(2);
+    for (const name of fs.existsSync(WORD_STAGE) ? fs.readdirSync(WORD_STAGE) : []) {
+      if (name.includes(tail)) fs.removeSync(path.join(WORD_STAGE, name));
+    }
+  };
+
+  let result;
+  try {
+    if (willToggle) {
+      // Journal FIRST, exactly as renderWord() does: if we are killed before the
+      // restore, the next run puts the user's preference back for them.
+      fs.ensureDirSync(path.dirname(PREF_JOURNAL));
+      fs.writeJsonSync(PREF_JOURNAL, {
+        originalValue: original,
+        pid: process.pid,
+        input,
+        startedAt: new Date().toISOString(),
+      });
+      if (!writeUpdateLinksPref(false)) {
+        fs.removeSync(PREF_JOURNAL);
+        cleanup();
+        return fail(
+          'Could not set Word\'s "update links at open" preference',
+          `Turn OFF ${PREF_UI_PATH} by hand, then re-run.`
+        );
+      }
+      notes.push({ kind: 'pref-toggled', from: original, to: false });
+    }
+    result = osa(buildTocOracleScript(stagedDocx, stagedOut, `${t}.docx`, t), timeoutMs);
+  } finally {
+    if (willToggle) {
+      if (writeUpdateLinksPref(original)) {
+        fs.removeSync(PREF_JOURNAL);
+        notes.push({ kind: 'pref-restored', to: original });
+      } else {
+        notes.push({
+          kind: 'pref-restore-failed',
+          to: original,
+          hint:
+            `Set ${PREF_UI_PATH} back to ${original ? 'ON' : 'OFF'} yourself, ` +
+            'or re-run -- the journalled value is replayed on start.',
+        });
+      }
+    }
+  }
+
+  try {
+    if (result.timedOut) {
+      return fail(
+        `Word did not finish paginating within ${secs(timeoutMs)}`,
+        'Check Word for an unexpected modal dialog and clear it.'
+      );
+    }
+    if (result.code !== 0) {
+      return fail(
+        `Word AppleScript failed (exit ${result.code})`,
+        (result.err || '').trim().split('\n')[0] || null
+      );
+    }
+    if (!fs.existsSync(stagedOut) || fs.statSync(stagedOut).size === 0) {
+      return fail('Word reported success but saved nothing', `Nothing at ${stagedOut}.`);
+    }
+    fs.ensureDirSync(path.dirname(output));
+    fs.moveSync(stagedOut, output, { overwrite: true });
+    return { ok: true, output, ms: Date.now() - started, notes };
+  } finally {
+    closeStagedDocs(t);
     cleanup();
   }
 }
@@ -934,6 +1201,7 @@ module.exports = {
   checkWordInstalled,
   renderLibreOffice,
   renderWord,
+  updateTocCache,
   recoverPrefJournal,
   sweepStaleStage,
   readUpdateLinksPref,

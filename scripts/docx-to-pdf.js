@@ -107,7 +107,21 @@ function reportNotes(notes) {
         break;
       case 'pref-toggled':
         console.log(
-          chalk.gray(`  ${render.PREF_UI_PATH} temporarily OFF (fields updated explicitly instead)`)
+          chalk.gray(`  ${render.PREF_UI_PATH} temporarily OFF (so no modal can block the run)`)
+        );
+        break;
+      case 'fields':
+        // Say which of the two things was measured, every time. This is the
+        // distinction that let a blank Contents ship: a PDF rendered with the
+        // fields updated is a proof of what Word can compute, not of what the
+        // .docx contains.
+        console.log(
+          n.updated
+            ? chalk.yellow(
+                '  fields UPDATED before export: this PDF shows what Word can rebuild, ' +
+                  'NOT what the .docx contains'
+              )
+            : chalk.gray('  fields not updated: this PDF shows the .docx exactly as it is')
         );
         break;
       case 'pref-restored':
@@ -296,6 +310,13 @@ function main() {
       "never touch Word's \"update automatic links at open\" preference; " +
         'report what to change instead'
     )
+    .option(
+      '--update-fields',
+      'rebuild the tables of contents/figures in Word before exporting. OFF by ' +
+        'default: a proof must show what the .docx contains, and updating on the way ' +
+        'out is exactly how a blank Contents shipped unnoticed. Use it for a document ' +
+        'that has no cached TOC result yet.'
+    )
     .option('-v, --verbose', 'show engine stderr')
     .showHelpAfterError();
 
@@ -360,11 +381,23 @@ function main() {
   if (choice.notProof) notAProofBanner(layout, { wordMissing: choice.wordMissing });
 
   const fields = render.docxFieldInfo(input);
-  if (fields.hasToc && engines.includes('libreoffice') && !engines.includes('word')) {
+  if (fields.hasToc && fields.tocCacheEntries === 0) {
+    // The defect this whole TOC cache exists to prevent, reported on any
+    // document that still has it. No engine will show a Contents here, and with
+    // --update-fields Word will manufacture one that is not in the file.
     console.log(
       chalk.yellow(
-        '  note: this document has a { TOC } field. LibreOffice does not update it, ' +
-          'so the rendered TOC will be empty. Use --engine word (or both) to see it filled.'
+        '  note: this document\'s { TOC } field has NO cached result, so it will render ' +
+          'as a blank Contents page - which is also what a reader sees on open. Run\n' +
+          '        node book-builder/scripts/lib/docx-postprocess.js <file> --variant digital|print\n' +
+          '        to build the cache.'
+      )
+    );
+  } else if (fields.hasToc) {
+    console.log(
+      chalk.gray(
+        `  note: { TOC } field carries a cached result of ${fields.tocCacheEntries} entries; ` +
+          'both engines render it from the file, nothing is recomputed.'
       )
     );
   }
@@ -381,6 +414,7 @@ function main() {
           : render.renderWord(input, out, {
               timeoutMs,
               allowPrefToggle: opts.wordPrefToggle !== false,
+              updateFields: opts.updateFields === true,
             });
     } catch (err) {
       console.log(chalk.red('failed'));

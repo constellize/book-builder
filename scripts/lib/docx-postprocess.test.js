@@ -363,6 +363,374 @@ test('marker characters are ones Atkinson actually has', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// table of contents
+//
+// The behaviour these protect — a Contents page that is populated the moment
+// the reader opens the file — is not observable from XML, and was verified by
+// rendering with Word WITHOUT updating any field and checking every cached page
+// number against the physical page the heading landed on. What is testable here
+// is the machinery that makes that repeatable: that the cache is rebuilt rather
+// than appended to, that no entry can point at a bookmark that is not there,
+// and that every guard fires.
+// ---------------------------------------------------------------------------
+
+/** pandoc's empty TOC field, byte for byte including its space-before-slash. */
+const EMPTY_TOC_FIELD =
+  '<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true" />' +
+  '<w:instrText xml:space="preserve">TOC \\o &quot;1-3&quot; \\h \\z \\u</w:instrText>' +
+  '<w:fldChar w:fldCharType="separate" /><w:fldChar w:fldCharType="end" /></w:r></w:p>';
+
+const sub = (id, level, text, number) =>
+  `<w:bookmarkStart w:id="8" w:name="${id}" />\n    ` +
+  `<w:p><w:pPr><w:pStyle w:val="Heading${level}" /></w:pPr>` +
+  (number
+    ? `<w:r><w:rPr><w:rStyle w:val="SectionNumber" /></w:rPr><w:t>${number}</w:t></w:r>` +
+      '<w:r><w:tab /></w:r>'
+    : '') +
+  `<w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`;
+
+/** Title page, the empty TOC field, then a chapter with two subsections. */
+const WITH_TOC = doc(
+  '<w:p><w:pPr><w:pStyle w:val="Title" /></w:pPr><w:r><w:t>Book</w:t></w:r></w:p>\n    ' +
+    EMPTY_TOC_FIELD +
+    '\n    ' +
+    sub('one', 1, 'One', '1') +
+    '\n    ' +
+    sub('one-a', 2, 'One A', '1.1') +
+    '\n    ' +
+    sub('one-a-i', 3, 'Deep &amp; Dangerous', null) +
+    '\n    ' +
+    sub('back', 1, 'Appendix A: Things', null)
+);
+
+const STYLES_XML =
+  '<?xml version="1.0"?><w:styles xmlns:w="w">' +
+  '<w:style w:type="paragraph" w:styleId="BodyText"><w:name w:val="Body Text"/></w:style>' +
+  '</w:styles>';
+
+test('finds pandoc\'s empty TOC field and reads its instruction', () => {
+  const f = pp.findTocField(WITH_TOC);
+  assert.ok(f, 'no field found');
+  assert.strictEqual(f.instr, 'TOC \\o "1-3" \\h \\z \\u', 'entities not decoded');
+  assert.strictEqual(
+    WITH_TOC.slice(f.start, f.end),
+    EMPTY_TOC_FIELD,
+    'the span is not exactly the field paragraph'
+  );
+});
+
+test('collects every Heading1-3 with its bookmark, number and title', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  assert.deepStrictEqual(
+    h,
+    [
+      { level: 1, anchor: 'one', number: '1', title: 'One' },
+      { level: 2, anchor: 'one-a', number: '1.1', title: 'One A' },
+      // Escaped source XML is carried through, NOT decoded and re-encoded.
+      { level: 3, anchor: 'one-a-i', number: null, title: 'Deep &amp; Dangerous' },
+      { level: 1, anchor: 'back', number: null, title: 'Appendix A: Things' },
+    ]
+  );
+});
+
+test('a heading with no bookmark fails loudly instead of linking nowhere', () => {
+  const orphan = WITH_TOC.replace('<w:bookmarkStart w:id="8" w:name="one-a" />', '');
+  throws(
+    () => pp.collectTocHeadings(orphan, spec),
+    /have no <w:bookmarkStart> immediately before them/,
+    'orphaned heading'
+  );
+});
+
+test('the built cache has one entry per heading, all anchored, page numbers blank', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const field = pp.buildTocField(h, spec, { pageNumbers: true });
+  const styles = ['TOC1', 'TOC2', 'TOC3', 'TOC1'];
+  assert.deepStrictEqual(
+    [...field.matchAll(/<w:pStyle w:val="(TOC\d)"\/>/g)].map((m) => m[1]),
+    styles
+  );
+  assert.deepStrictEqual(
+    [...field.matchAll(/<w:hyperlink w:anchor="([^"]+)"/g)].map((m) => m[1]),
+    ['one', 'one-a', 'one-a-i', 'back']
+  );
+  assert.strictEqual(
+    (field.match(/ PAGEREF /g) || []).length,
+    4,
+    'one PAGEREF per entry'
+  );
+  // Blank cached results: the oracle fills these in, we do not guess them.
+  assert.strictEqual((field.match(/<w:t><\/w:t>/g) || []).length, 4);
+  // The field's own begin/separate go in the first paragraph, its end in the last.
+  assert.strictEqual((field.match(/<w:instrText xml:space="preserve">TOC /g) || []).length, 1);
+  assert.ok(field.endsWith('<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'));
+});
+
+test('page numbers land on the right entries', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const field = pp.buildTocField(h, spec, { pageNumbers: true, pages: [3, 4, 5, 99] });
+  assert.deepStrictEqual(
+    [...field.matchAll(/<w:webHidden\/><\/w:rPr><w:t>(\d+)<\/w:t>/g)].map((m) => m[1]),
+    ['3', '4', '5', '99']
+  );
+});
+
+test('the no-Word form drops the leader tab and the PAGEREF, not the links', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const field = pp.buildTocField(h, spec, { pageNumbers: false });
+  assert.strictEqual((field.match(/PAGEREF/g) || []).length, 0, 'PAGEREF survived');
+  assert.strictEqual((field.match(/w:leader="dot"/g) || []).length, 0, 'leader tab survived');
+  assert.strictEqual((field.match(/<w:hyperlink /g) || []).length, 4, 'links were dropped');
+  assert.ok(field.includes('\\n</w:instrText>'), 'instruction does not suppress page numbers');
+});
+
+test('rebuilding replaces the cache instead of stacking a second one', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const once = pp.replaceTocField(WITH_TOC, pp.buildTocField(h, spec, { pageNumbers: true })).xml;
+  const twice = pp.replaceTocField(once, pp.buildTocField(h, spec, { pageNumbers: true })).xml;
+  assert.strictEqual(twice, once, 'not idempotent');
+  // And the second pass still saw ONE field, not a nested mess.
+  assert.strictEqual((once.match(/<w:instrText xml:space="preserve">TOC /g) || []).length, 1);
+  // Swapping to the no-page-number form and back is also lossless.
+  const noPages = pp.replaceTocField(once, pp.buildTocField(h, spec, { pageNumbers: false })).xml;
+  const back = pp.replaceTocField(noPages, pp.buildTocField(h, spec, { pageNumbers: true })).xml;
+  assert.strictEqual(back, once, 'round trip through the \\n form is lossy');
+});
+
+test('findTocField counts nested PAGEREF fields correctly', () => {
+  // The reason the span search balances begin/end rather than stopping at the
+  // first `end`: every entry contains a whole PAGEREF field of its own.
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const built = pp.replaceTocField(WITH_TOC, pp.buildTocField(h, spec, { pageNumbers: true })).xml;
+  const f = pp.findTocField(built);
+  const span = built.slice(f.start, f.end);
+  assert.strictEqual((span.match(/<w:pStyle w:val="TOC\d"\/>/g) || []).length, 4);
+  assert.ok(!span.includes('<w:pStyle w:val="Heading1" />'), 'span ran past the field');
+  assert.ok(built.slice(f.end).includes('Heading1'), 'the body was swallowed');
+});
+
+test('a document with no TOC field fails loudly', () => {
+  throws(
+    () => pp.replaceTocField(THREE_CHAPTERS, '<w:p/>'),
+    /contains no TOC field/,
+    'missing field'
+  );
+});
+
+test('the TOC styles are built-in, not custom, and reset the body indent', () => {
+  const xml = pp.tocStyleXml(spec);
+  assert.ok(!xml.includes('w:customStyle'), 'built-in styles must not be marked custom');
+  assert.deepStrictEqual(
+    [...xml.matchAll(/<w:name w:val="([^"]+)"\/>/g)].map((m) => m[1]),
+    ['toc 1', 'toc 2', 'toc 3']
+  );
+  // BodyText carries the book's 340tw first-line indent; inheriting it would
+  // indent every Contents line.
+  assert.strictEqual((xml.match(/w:firstLine="0"/g) || []).length, 3);
+  assert.strictEqual((xml.match(/<w:basedOn w:val="BodyText"\/>/g) || []).length, 3);
+});
+
+test('injecting the TOC styles is idempotent and updates in place', () => {
+  const first = pp.injectTocStyles(STYLES_XML, spec);
+  assert.deepStrictEqual(first.injected, ['TOC1', 'TOC2', 'TOC3']);
+  assert.deepStrictEqual(first.replaced, []);
+  const second = pp.injectTocStyles(first.xml, spec);
+  assert.strictEqual(second.xml, first.xml, 'not idempotent');
+  // Replaced, not skipped: a spec change must take effect on a re-run.
+  assert.deepStrictEqual(second.replaced, ['TOC1', 'TOC2', 'TOC3']);
+  assert.strictEqual((second.xml.match(/w:styleId="TOC1"/g) || []).length, 1, 'duplicated');
+});
+
+test('page numbers are read back by anchor, in document order', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const built = pp.replaceTocField(
+    WITH_TOC,
+    pp.buildTocField(h, spec, { pageNumbers: true, pages: [3, 4, 5, 99] })
+  ).xml;
+  assert.deepStrictEqual(pp.readTocPageNumbers(built), [
+    { anchor: 'one', page: '3' },
+    { anchor: 'one-a', page: '4' },
+    { anchor: 'one-a-i', page: '5' },
+    { anchor: 'back', page: '99' },
+  ]);
+});
+
+test('a PAGEREF outside the TOC is never mistaken for an entry', () => {
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  let built = pp.replaceTocField(
+    WITH_TOC,
+    pp.buildTocField(h, spec, { pageNumbers: true, pages: [3, 4, 5, 99] })
+  ).xml;
+  built = built.replace(
+    '</w:body>',
+    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> PAGEREF stray \\h </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>404</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body>'
+  );
+  const got = pp.readTocPageNumbers(built);
+  assert.strictEqual(got.length, 4, 'the stray PAGEREF was counted');
+  assert.ok(!got.some((g) => g.anchor === 'stray'));
+});
+
+test('the stale-cache markers are removed from both files', () => {
+  const settings = '<w:settings><w:savePreviewPicture/><w:updateFields w:val="true"/></w:settings>';
+  const r = pp.stripFieldRefreshFlags(WITH_TOC, settings);
+  assert.strictEqual(r.dirty, 1);
+  assert.strictEqual(r.updates, 1);
+  assert.ok(!r.doc.includes('w:dirty'));
+  assert.ok(!r.settings.includes('updateFields'));
+  // The fldChar itself must survive: this clears a flag, it does not delete the field.
+  assert.ok(r.doc.includes('<w:fldChar w:fldCharType="begin" />'));
+  // Idempotent.
+  const again = pp.stripFieldRefreshFlags(r.doc, r.settings);
+  assert.strictEqual(again.doc, r.doc);
+  assert.strictEqual(again.settings, r.settings);
+  assert.strictEqual(again.dirty, 0);
+});
+
+test('every TOC style the entries name is a style the spec defines', () => {
+  // The entry paragraphs reference TOC_STYLE_IDS by index; a spec with a fourth
+  // level and no fourth style id would silently emit `undefined`.
+  assert.strictEqual(spec.toc.levels.length, pp.TOC_STYLE_IDS.length);
+  const h = pp.collectTocHeadings(WITH_TOC, spec);
+  const field = pp.buildTocField(h, spec, { pageNumbers: true });
+  assert.ok(!field.includes('undefined'), 'an entry named a style that does not exist');
+});
+
+// ---------------------------------------------------------------------------
+// the Contents pages' running head
+// ---------------------------------------------------------------------------
+
+const HEADER_WITH_STYLEREF =
+  '<w:hdr xmlns:w="w" xmlns:r="r"><w:tbl><w:tr><w:tc><w:p><w:pPr>' +
+  '<w:pStyle w:val="Header"/></w:pPr>' +
+  '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+  '<w:r><w:instrText xml:space="preserve"> STYLEREF &quot;Heading 1&quot; \\* MERGEFORMAT </w:instrText></w:r>' +
+  '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+  '<w:r><w:t>Chapter</w:t></w:r>' +
+  '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+  '</w:p></w:tc><w:tc><w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr>' +
+  '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+  '<w:r><w:instrText xml:space="preserve"> PAGE \\* MERGEFORMAT </w:instrText></w:r>' +
+  '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r>' +
+  '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+  '</w:p></w:tc></w:tr></w:tbl></w:hdr>';
+
+const RELS =
+  '<?xml version="1.0"?><Relationships xmlns="R">' +
+  '<Relationship Id="rId901" Target="header1.xml" Type="T"/>' +
+  '<Relationship Id="rId902" Target="header2.xml" Type="T"/>' +
+  '</Relationships>';
+
+const CONTENT_TYPES = '<?xml version="1.0"?><Types xmlns="C"></Types>';
+
+/** In-memory stand-in for the unzipped package. */
+function fakeIo(extra = {}) {
+  const files = {
+    'word/_rels/document.xml.rels': RELS,
+    '[Content_Types].xml': CONTENT_TYPES,
+    'word/header1.xml': HEADER_WITH_STYLEREF,
+    'word/header2.xml': HEADER_WITH_STYLEREF,
+    ...extra,
+  };
+  return {
+    files,
+    exists: (rel) => Object.prototype.hasOwnProperty.call(files, rel),
+    read: (rel) => files[rel],
+    write: (rel, data) => {
+      files[rel] = data;
+    },
+  };
+}
+
+test('STYLEREF is replaced by literal text, and the PAGE field survives', () => {
+  const out = pp.styleRefToLiteral(HEADER_WITH_STYLEREF, 'Contents');
+  assert.ok(out, 'no replacement made');
+  assert.ok(!out.includes('STYLEREF'), 'the STYLEREF field survived');
+  assert.ok(out.includes('<w:t xml:space="preserve">Contents</w:t>'));
+  // The folio must still be a live PAGE field, and the rule/table must survive.
+  assert.ok(out.includes('PAGE \\* MERGEFORMAT'), 'the PAGE field was eaten');
+  assert.strictEqual((out.match(/<w:tc>/g) || []).length, 2, 'the header table was damaged');
+  assert.strictEqual(pp.styleRefToLiteral('<w:hdr/>', 'Contents'), null, 'no field, no claim');
+});
+
+test('the front-matter section gets its own headers, and only that section', () => {
+  const withToc = pp.insertChapterSections(WITH_TOC, spec);
+  const io = fakeIo();
+  const r = pp.applyContentsHeader(io, withToc.xml, 'Contents');
+  assert.strictEqual(r.applied, true, r.reason);
+  assert.deepStrictEqual(r.parts.sort(), [
+    'word/headerContentsEven.xml',
+    'word/headerContentsOdd.xml',
+  ]);
+
+  // Exactly ONE section break points at the new headers; the other three still
+  // point at the book's own.
+  const odd = (r.xml.match(/r:id="rIdContentsHeaderOdd"/g) || []).length;
+  const even = (r.xml.match(/r:id="rIdContentsHeaderEven"/g) || []).length;
+  assert.strictEqual(odd, 1, `${odd} sections rewired to the odd header, expected 1`);
+  assert.strictEqual(even, 1, `${even} sections rewired to the even header, expected 1`);
+  assert.ok(
+    (r.xml.match(/r:id="rId901"/g) || []).length >= 1,
+    'every section lost the book header, not just the front matter'
+  );
+
+  // And it is the FIRST one - the one after the TOC.
+  const at = r.xml.indexOf('rIdContentsHeaderOdd');
+  assert.ok(
+    r.xml.slice(0, at).includes('TOC \\o'),
+    'the rewired section is not the one that follows the Contents'
+  );
+
+  // Package plumbing.
+  assert.ok(io.files['word/headerContentsOdd.xml'].includes('Contents'));
+  assert.ok(!io.files['word/headerContentsOdd.xml'].includes('STYLEREF'));
+  assert.ok(io.files['word/_rels/document.xml.rels'].includes('Id="rIdContentsHeaderOdd"'));
+  assert.ok(
+    io.files['[Content_Types].xml'].includes('PartName="/word/headerContentsOdd.xml"'),
+    'no content-type override; Word would refuse to open the package'
+  );
+});
+
+test('rewiring the running head is idempotent', () => {
+  const withToc = pp.insertChapterSections(WITH_TOC, spec);
+  const io = fakeIo();
+  const once = pp.applyContentsHeader(io, withToc.xml, 'Contents');
+  // Second pass starts from a document that already points at the new headers,
+  // so the source header it copies is the new one - which has no STYLEREF.
+  const twice = pp.applyContentsHeader(io, once.xml, 'Contents');
+  // Recognised as already done, NOT reported as "the header has no STYLEREF" -
+  // which is true of our own output and would read as a failure.
+  assert.strictEqual(twice.applied, true, twice.reason);
+  assert.strictEqual(twice.reason, null);
+  assert.strictEqual(twice.xml, once.xml, 'the document was changed on a no-op pass');
+  assert.strictEqual(
+    (io.files['word/_rels/document.xml.rels'].match(/rIdContentsHeaderOdd/g) || []).length,
+    1,
+    'the relationship was added twice'
+  );
+});
+
+test('it refuses to rewire a section that is not the front matter', () => {
+  // No TOC field before the first break => this is not the section we mean.
+  const noToc = pp.insertChapterSections(THREE_CHAPTERS, spec);
+  const r = pp.applyContentsHeader(fakeIo(), noToc.xml, 'Contents');
+  assert.strictEqual(r.applied, false);
+  assert.match(r.reason, /does not follow the TOC field/);
+  assert.strictEqual(r.xml, noToc.xml, 'the document was modified anyway');
+});
+
+test('a header it does not recognise is reported, not guessed at', () => {
+  const withToc = pp.insertChapterSections(WITH_TOC, spec);
+  const io = fakeIo({ 'word/header2.xml': '<w:hdr xmlns:w="w"><w:p/></w:hdr>' });
+  const r = pp.applyContentsHeader(io, withToc.xml, 'Contents');
+  assert.strictEqual(r.applied, false);
+  assert.match(r.reason, /no STYLEREF field to replace/);
+  assert.strictEqual(r.xml, withToc.xml, 'a failed rewire must leave the document alone');
+});
+
 console.log(
   failed === 0
     ? `\nALL ${passed} UNIT TESTS PASSED`

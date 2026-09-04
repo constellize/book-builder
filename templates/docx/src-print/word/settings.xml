@@ -5,13 +5,13 @@
   <w:proofState w:spelling="clean" w:grammar="clean" />
   <w:stylePaneFormatFilter w:val="0004" />
   <w:doNotTrackMoves />
-  <w:defaultTabStop w:val="720" /><w:evenAndOddHeaders/>
-  <w:drawingGridHorizontalSpacing w:val="360" />
+  <w:defaultTabStop w:val="720" /><w:autoHyphenation w:val="true"/><w:consecutiveHyphenLimit w:val="2"/><w:hyphenationZone w:val="624"/><w:doNotHyphenateCaps w:val="true"/>
+  <w:evenAndOddHeaders/><w:drawingGridHorizontalSpacing w:val="360" />
   <w:drawingGridVerticalSpacing w:val="360" />
   <w:displayHorizontalDrawingGridEvery w:val="0" />
   <w:displayVerticalDrawingGridEvery w:val="0" />
   <w:characterSpacingControl w:val="doNotCompress" />
-  <w:savePreviewPicture /><w:updateFields w:val="true"/>
+  <w:savePreviewPicture />
   <w:footnotePr>
     <w:footnote w:id="-1" />
     <w:footnote w:id="0" />

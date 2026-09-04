@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * docx-postprocess.js — the two fixes that CANNOT live in the reference doc.
+ * docx-postprocess.js — the three fixes that CANNOT live in the reference doc.
  *
  *     node scripts/lib/docx-postprocess.js build/book.docx --variant print
  *
@@ -15,7 +15,7 @@
  * ---------------------------------------------------------------------------
  * Everything else about these documents is expressed declaratively in
  * config/docx-styles.js and baked into templates/docx/reference-*.docx. These
- * two things cannot be, and the reasons are different for each:
+ * three things cannot be, and the reasons are different for each:
  *
  *  1. OPEN-RIGHT CHAPTERS. `w:type="oddPage"` is a property of a SECTION, and
  *     pandoc emits exactly one section for the whole document — measured: one
@@ -46,12 +46,27 @@
  *     the AST has no marker-font attribute to carry the request on. The output
  *     file is the first and only place the real numbering.xml exists.
  *
+ *  3. THE TABLE OF CONTENTS CACHE. pandoc writes the TOC field with an EMPTY
+ *     cached result, and a Word field shows its cache until something updates
+ *     it — so the book opened on a BLANK Contents page for the whole life of
+ *     this target. What has to change is the field's RESULT, which exists only
+ *     in the output file: the AST a Lua filter sees has no page numbers in it,
+ *     and no reference-doc setting can supply one (`<w:updateFields/>` was
+ *     there for exactly this and is inert — see config/docx-styles.js
+ *     settingsCommon for the A/B). The long version, including why one Word
+ *     pass is enough and what ships when there is no Word, is in the
+ *     "document.xml — the table of contents cache" section below.
+ *
  * ---------------------------------------------------------------------------
  * IDEMPOTENCE
  * ---------------------------------------------------------------------------
- * Both patches are safe to re-run. Section breaks are removed and re-inserted
- * rather than appended to, and the numbering patch overwrites rather than
- * accumulates, so N runs produce the same bytes as one. `--check` asserts it.
+ * All three patches are safe to re-run. Section breaks are removed and
+ * re-inserted rather than appended to, the numbering patch overwrites rather
+ * than accumulates, and the TOC field is located and REPLACED whole — the same
+ * code finds pandoc's empty field and a cache built by an earlier run, because
+ * structurally they are the same thing. N runs therefore produce the same bytes
+ * as one, with one legitimate exception: a page number changes when the
+ * manuscript's pagination has actually changed.
  *
  * @module scripts/lib/docx-postprocess
  */
@@ -456,8 +471,746 @@ function patchNumbering(xml, markers) {
 }
 
 // ===========================================================================
+// document.xml — the table of contents cache
+// ===========================================================================
+
+/**
+ * ---------------------------------------------------------------------------
+ * WHY THE TOC HAS TO BE BUILT HERE TOO
+ * ---------------------------------------------------------------------------
+ * pandoc's `--toc` emits the field with an EMPTY CACHED RESULT:
+ *
+ *     <w:p><w:r>
+ *       <w:fldChar w:fldCharType="begin" w:dirty="true"/>
+ *       <w:instrText xml:space="preserve">TOC \o "1-3" \h \z \u</w:instrText>
+ *       <w:fldChar w:fldCharType="separate"/>
+ *       <w:fldChar w:fldCharType="end"/>
+ *     </w:r></w:p>
+ *
+ * Nothing between `separate` and `end`. A Word field displays its cached result
+ * until something updates it, so the reader opens the book and the Contents page
+ * is BLANK. The PDFs never showed this because scripts/lib/docx-render.js
+ * updates the field on the way to PDF, which masked it for the whole life of
+ * the target.
+ *
+ * `<w:updateFields w:val="true"/>` does not fix it. Whether Word refreshes on
+ * open is governed by the user's "update automatic links at open" preference,
+ * and on the author's machine that preference is OFF — so the field would never
+ * have populated for them under any circumstances. See config/docx-styles.js
+ * settingsCommon for the A/B that established this.
+ *
+ * So the field result is written into document.xml here, which is the only
+ * place it can be written: the cache is a property of the output file, and the
+ * AST a Lua filter sees has no page numbers in it.
+ *
+ * ---------------------------------------------------------------------------
+ * THE THREE STAGES, AND WHY IT CONVERGES IN ONE PASS
+ * ---------------------------------------------------------------------------
+ *   1. SKELETON (here, pure Node). Inject the TOC1-3 styles, then re-emit the
+ *      field with one entry paragraph per Heading1-3, each a hyperlink to the
+ *      bookmark pandoc already wrote for that heading, each ending in a PAGEREF
+ *      field whose cached result is blank.
+ *   2. ORACLE (docx-render.js updateTocCache, ~6s of Word). Word repaginates and
+ *      fills in the PAGEREF results. Its re-saved package is read and thrown
+ *      away; it is not fit to ship (see that function for the font damage).
+ *   3. SPLICE (here, pure Node). Re-emit the same entries with the numbers.
+ *
+ * Stage 3 cannot invalidate stage 2's measurement, so there is no LaTeX-style
+ * iterate-to-fixpoint problem:
+ *   - the oracle is asked ONLY to update page numbers, never to rebuild the
+ *     field, so it paginates our exact paragraphs in our exact styles;
+ *   - a page number sits after a right-aligned tab on a line that already
+ *     exists, so writing it cannot change the line count, cannot change the
+ *     length of the Contents, and therefore cannot move anything.
+ * Measured: re-running the oracle on the spliced output gave 0 page differences
+ * and 0 text differences across all 159 entries, and rendering the spliced file
+ * WITHOUT updating any field put 159/159 entries on the physical page the
+ * heading actually appears on.
+ *
+ * ---------------------------------------------------------------------------
+ * WITHOUT WORD
+ * ---------------------------------------------------------------------------
+ * Stage 2 is optional. `\n` added to the field instruction suppresses page
+ * numbers, and buildTocField() then omits the leader tab and the PAGEREF runs
+ * entirely, so the fallback is a complete, correctly indented, fully clickable
+ * Contents with no numbers — not a Contents whose dot leaders run to a blank.
+ * The build succeeds and warns. It never hard-requires a GUI application.
+ */
+
+/** Style ids for the three outline levels. Index 0 = level 1. */
+const TOC_STYLE_IDS = ['TOC1', 'TOC2', 'TOC3'];
+
+/**
+ * What the Contents page is called, in the running head over it.
+ *
+ * Matches the TOCHeading paragraph pandoc writes ("Contents", set by the
+ * `toc-title` in the docx defaults file) and what the LaTeX targets print.
+ * Used only by applyContentsHeader().
+ */
+const TOC_HEADING_TEXT = 'Contents';
+
+/** `<w:rPr>` shared by the hidden runs that carry the page number. */
+const TOC_RPR_HIDDEN = '<w:rPr><w:noProof/><w:webHidden/></w:rPr>';
+
+/** `<w:rPr>` for the visible, clickable entry text. */
+const TOC_RPR_LINK = '<w:rPr><w:rStyle w:val="Hyperlink"/><w:noProof/></w:rPr>';
+
+/**
+ * The `toc 1` / `toc 2` / `toc 3` paragraph style definitions.
+ *
+ * Emitted WITHOUT `w:customStyle="1"`: these are built-in Word styles and the
+ * `w:name` values ("toc 1"...) are the built-in names. Marking a built-in as
+ * custom is what makes Word create a second, parallel style when a reader
+ * rebuilds the field.
+ *
+ * `w:firstLine="0"` is not cosmetic. These are `basedOn BodyText`, and BodyText
+ * carries the book's 340tw paragraph indent; without the reset every entry
+ * would inherit it.
+ *
+ * @param {object} spec resolved config/docx-styles.js spec
+ * @returns {string} three `<w:style>` elements
+ */
+function tocStyleXml(spec) {
+  return spec.toc.levels
+    .map((lv, i) => {
+      const n = i + 1;
+      return (
+        `<w:style w:type="paragraph" w:styleId="${TOC_STYLE_IDS[i]}">` +
+        `<w:name w:val="toc ${n}"/>` +
+        '<w:basedOn w:val="BodyText"/><w:next w:val="BodyText"/>' +
+        '<w:uiPriority w:val="39"/><w:unhideWhenUsed/>' +
+        '<w:pPr>' +
+        // Leading must be an EXPLICIT twip value with lineRule="atLeast", not
+        // 240/auto. `auto` multiplies the FONT's natural line height (Atkinson is
+        // 1.157em -> 12.73pt at 11pt), which renders ~6% tight against LaTeX - the
+        // same defect, and the same magnitude, as the original body-text bug.
+        // TOC1-3 are basedOn BodyText but OVERRIDE spacing here, so they inherit
+        // nothing: this line is the only thing setting Contents leading.
+        `<w:spacing w:before="${lv.before}" w:after="${lv.after}" ` +
+        `w:line="${styleSpec.LINE.body}" w:lineRule="atLeast"/>` +
+        `<w:ind w:left="${lv.indent}" w:right="0" w:firstLine="0"/>` +
+        '</w:pPr>' +
+        (lv.bold ? '<w:rPr><w:b/><w:bCs/></w:rPr>' : '') +
+        '</w:style>'
+      );
+    })
+    .join('');
+}
+
+/**
+ * Add the TOC1-3 styles to word/styles.xml, replacing any already there.
+ *
+ * Idempotent by replacement rather than by "skip if present", so a change to
+ * the spec takes effect on a re-run instead of being silently ignored.
+ *
+ * @param {string} xml word/styles.xml
+ * @param {object} spec resolved spec
+ * @returns {{xml: string, injected: string[], replaced: string[]}}
+ * @throws {Error} if there is no `</w:styles>` to insert before
+ */
+function injectTocStyles(xml, spec) {
+  const injected = [];
+  const replaced = [];
+  let out = xml;
+
+  for (let i = 0; i < TOC_STYLE_IDS.length; i++) {
+    const id = TOC_STYLE_IDS[i];
+    const one = tocStyleXml(spec).match(
+      new RegExp(`<w:style\\b[^>]*w:styleId="${id}"[^>]*>[\\s\\S]*?</w:style>`)
+    )[0];
+    const existing = new RegExp(`<w:style\\b[^>]*w:styleId="${id}"[^>]*>[\\s\\S]*?</w:style>`);
+    if (existing.test(out)) {
+      out = out.replace(existing, one);
+      replaced.push(id);
+    } else {
+      const close = out.lastIndexOf('</w:styles>');
+      if (close === -1) {
+        throw new Error('docx-postprocess: word/styles.xml has no </w:styles>');
+      }
+      out = out.slice(0, close) + one + out.slice(close);
+      injected.push(id);
+    }
+  }
+  return { xml: out, injected, replaced };
+}
+
+/**
+ * Locate the whole TOC field, from the `<w:p>` that opens it to the `</w:p>`
+ * that closes it.
+ *
+ * Handles BOTH shapes with one piece of code, which is what makes re-running
+ * safe: pandoc's empty single-paragraph field and our own multi-paragraph cache
+ * are the same structure, one just has nothing between `separate` and `end`.
+ * Nested PAGEREF fields inside the entries are balanced, so counting
+ * begin/end back down to zero always lands on the TOC's own terminator.
+ *
+ * @param {string} xml document.xml
+ * @returns {{start: number, end: number, instr: string}|null}
+ * @throws {Error} if the field opens but never closes
+ */
+function findTocField(xml) {
+  const instrRe = /<w:instrText\b[^>]*>\s*(TOC\b[^<]*?)\s*<\/w:instrText>/;
+  const m = instrRe.exec(xml);
+  if (!m) return null;
+
+  // Back up to the paragraph that contains the field's `begin`.
+  const pStart = Math.max(xml.lastIndexOf('<w:p>', m.index), xml.lastIndexOf('<w:p ', m.index));
+  if (pStart === -1) throw new Error('docx-postprocess: TOC field is not inside a <w:p>');
+
+  // Walk forward over fldChar begin/end until the outermost field closes.
+  const charRe = /<w:fldChar\b[^>]*w:fldCharType="(begin|end)"[^>]*\/>/g;
+  charRe.lastIndex = pStart;
+  let depth = 0;
+  let closeAt = -1;
+  let c;
+  while ((c = charRe.exec(xml)) !== null) {
+    depth += c[1] === 'begin' ? 1 : -1;
+    if (depth === 0) {
+      closeAt = c.index + c[0].length;
+      break;
+    }
+  }
+  if (closeAt === -1) {
+    throw new Error('docx-postprocess: the TOC field opens but never closes');
+  }
+  const pEnd = xml.indexOf('</w:p>', closeAt);
+  if (pEnd === -1) throw new Error('docx-postprocess: TOC field runs past the last paragraph');
+
+  return {
+    start: pStart,
+    end: pEnd + '</w:p>'.length,
+    instr: unescapeXmlAttr(m[1]),
+  };
+}
+
+/** Undo the entity escaping pandoc applies inside `<w:instrText>`. */
+function unescapeXmlAttr(s) {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** Escape text for a text node. */
+function escText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Every Heading1-3 paragraph, in document order, with the bookmark that anchors
+ * it and its text split into section number and title.
+ *
+ * The number/title split matters because pandoc writes the number as a
+ * SectionNumber-styled run followed by a bare `<w:tab/>`, and a tab is not text.
+ * Concatenating every `<w:t>` would give "1The Intent-Implementation Gap"; the
+ * TOC needs the two halves separated by a tab of its own so the titles line up.
+ *
+ * Run text is carried through as the ALREADY-ESCAPED source XML rather than
+ * being decoded and re-encoded. Titles in this book contain typographic
+ * apostrophes and en dashes; a decode/encode round trip is a chance to get one
+ * of them wrong for no benefit.
+ *
+ * @param {string} xml document.xml
+ * @param {object} spec resolved spec
+ * @returns {Array<{level: number, anchor: string, number: string|null, title: string}>}
+ * @throws {Error} if a heading has no bookmark to link to
+ */
+function collectTocHeadings(xml, spec) {
+  const bodyOpen = /<w:body\b[^>]*>/.exec(xml);
+  if (!bodyOpen) throw new Error('docx-postprocess: document.xml has no <w:body>');
+
+  const paraRe = /<w:p\b(?:\s[^>]*)?>(?:(?!<\/w:p>)[\s\S])*?<\/w:p>/g;
+  const runRe = /<w:r\b(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g;
+  const out = [];
+  const unanchored = [];
+
+  let m;
+  while ((m = paraRe.exec(xml)) !== null) {
+    const lvl = /<w:pStyle w:val="Heading([1-3])"\s*\/>/.exec(m[0]);
+    if (!lvl) continue;
+    const level = Number(lvl[1]);
+
+    // The bookmark pandoc emits immediately before the heading. Verified
+    // present for all 159 headings; docx-postprocess's own chapter break is
+    // inserted BEFORE it precisely so this adjacency survives (see
+    // rewindOverBookmarks).
+    const before = xml.slice(0, m.index).replace(/\s+$/, '');
+    const bm = /<w:bookmarkStart\b[^>]*w:name="([^"]+)"\s*\/>$/.exec(before);
+
+    let number = null;
+    const titleParts = [];
+    let r;
+    runRe.lastIndex = 0;
+    while ((r = runRe.exec(m[0])) !== null) {
+      const t = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/.exec(r[0]);
+      if (!t) continue;
+      if (/<w:rStyle w:val="SectionNumber"\s*\/>/.test(r[0])) number = t[1];
+      else titleParts.push(t[1]);
+    }
+
+    if (!bm) {
+      unanchored.push(titleParts.join('').slice(0, 40));
+      continue;
+    }
+    out.push({ level, anchor: bm[1], number, title: titleParts.join('') });
+  }
+
+  if (unanchored.length) {
+    throw new Error(
+      `docx-postprocess: ${unanchored.length} of ${out.length + unanchored.length} headings ` +
+        'have no <w:bookmarkStart> immediately before them, so no TOC entry could link to ' +
+        `them: ${unanchored.slice(0, 3).join(', ')}. pandoc emits one per heading; something ` +
+        'upstream is stripping them.'
+    );
+  }
+  if (out.length === 0) {
+    throw new Error(
+      `docx-postprocess: found no Heading1-3 paragraphs, so the ${spec.toc.instruction} ` +
+        'field would have nothing to point at.'
+    );
+  }
+  return out;
+}
+
+/**
+ * One TOC entry paragraph.
+ *
+ * Shape is Word's own, minus the parts of Word's that we do not want: no
+ * `w:rsid*`, no `w14:paraId`, and crucially no direct `<w:rPr>` carrying
+ * `w:rFonts asciiTheme="minorHAnsi"` and `w:sz w:val="24"`. Word stamps those
+ * onto every entry when IT builds a TOC, which is how a Contents ends up in a
+ * different face and size from the book. Ours inherit from TOC1-3, which
+ * inherit from BodyText.
+ */
+function tocEntryXml(entry, opts, spec) {
+  const level = entry.level;
+  const lv = spec.toc.levels[level - 1];
+  const tabs =
+    '<w:tabs>' +
+    (entry.number !== null
+      ? `<w:tab w:val="left" w:pos="${lv.indent + spec.toc.numberTab(level)}"/>`
+      : '') +
+    (opts.pageNumbers
+      ? `<w:tab w:val="right" w:leader="dot" w:pos="${spec.toc.leaderTabPos}"/>`
+      : '') +
+    '</w:tabs>';
+
+  const pPr =
+    `<w:pPr><w:pStyle w:val="${TOC_STYLE_IDS[level - 1]}"/>${tabs}` +
+    '<w:rPr><w:noProof/></w:rPr></w:pPr>';
+
+  // The TOC field's own begin/instrText/separate go inside the FIRST entry
+  // paragraph and its `end` inside the LAST, exactly as Word writes it. That is
+  // what makes the whole block one field the reader can still refresh with F9.
+  const lead = opts.first
+    ? '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      `<w:r><w:instrText xml:space="preserve">${escText(opts.instr)}</w:instrText></w:r>` +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    : '';
+
+  let text = '';
+  if (entry.number !== null) {
+    text += `<w:r>${TOC_RPR_LINK}<w:t xml:space="preserve">${entry.number}</w:t></w:r>`;
+    text += `<w:r><w:rPr><w:noProof/></w:rPr><w:tab/></w:r>`;
+  }
+  text += `<w:r>${TOC_RPR_LINK}<w:t xml:space="preserve">${entry.title}</w:t></w:r>`;
+
+  // `\n` in the instruction suppresses page numbers; emitting the leader tab and
+  // the PAGEREF anyway would give a dot leader running to nothing.
+  const page = opts.pageNumbers
+    ? `<w:r>${TOC_RPR_HIDDEN}<w:tab/></w:r>` +
+      `<w:r>${TOC_RPR_HIDDEN}<w:fldChar w:fldCharType="begin"/></w:r>` +
+      `<w:r>${TOC_RPR_HIDDEN}<w:instrText xml:space="preserve"> PAGEREF ${entry.anchor} \\h </w:instrText></w:r>` +
+      `<w:r>${TOC_RPR_HIDDEN}<w:fldChar w:fldCharType="separate"/></w:r>` +
+      `<w:r>${TOC_RPR_HIDDEN}<w:t>${escText(opts.page == null ? '' : opts.page)}</w:t></w:r>` +
+      `<w:r>${TOC_RPR_HIDDEN}<w:fldChar w:fldCharType="end"/></w:r>`
+    : '';
+
+  const tail = opts.last ? '<w:r><w:fldChar w:fldCharType="end"/></w:r>' : '';
+
+  return (
+    `<w:p>${pPr}${lead}` +
+    `<w:hyperlink w:anchor="${escText(entry.anchor)}" w:history="1">${text}${page}</w:hyperlink>` +
+    `${tail}</w:p>`
+  );
+}
+
+/**
+ * The whole field, as the replacement for whatever findTocField() matched.
+ *
+ * @param {Array} headings from collectTocHeadings()
+ * @param {object} spec resolved spec
+ * @param {object} [opts]
+ * @param {boolean} [opts.pageNumbers=true] false emits the `\n` (no page numbers) form
+ * @param {Array<string|number>} [opts.pages] cached page number per entry, index-aligned;
+ *   omit for the blank-numbered skeleton the oracle is asked to fill in
+ * @returns {string} XML
+ */
+function buildTocField(headings, spec, opts = {}) {
+  const pageNumbers = opts.pageNumbers !== false;
+  const pages = opts.pages || [];
+  const instr = pageNumbers ? spec.toc.instruction : spec.toc.instructionNoPages;
+  return headings
+    .map((h, i) =>
+      tocEntryXml(h, {
+        first: i === 0,
+        last: i === headings.length - 1,
+        instr,
+        pageNumbers,
+        page: pages[i],
+      }, spec)
+    )
+    .join('');
+}
+
+/**
+ * Replace the TOC field in `xml` with `field`.
+ *
+ * @returns {{xml: string, instr: string}}
+ * @throws {Error} if there is no TOC field — the docx targets always ask pandoc
+ *   for one, so its absence means `--toc` stopped being passed and the Contents
+ *   page would ship empty again
+ */
+function replaceTocField(xml, field) {
+  const found = findTocField(xml);
+  if (!found) {
+    throw new Error(
+      'docx-postprocess: document.xml contains no TOC field. The docx targets pass ' +
+        '--toc, so this means the defaults file or the pandoc invocation changed and ' +
+        'the book would ship with no Contents at all.'
+    );
+  }
+  return {
+    xml: xml.slice(0, found.start) + field + xml.slice(found.end),
+    instr: found.instr,
+  };
+}
+
+/**
+ * Read the PAGEREF results Word computed, in document order.
+ *
+ * Restricted to the span of the TOC field so a PAGEREF anywhere else in the
+ * document could never be mistaken for an entry.
+ *
+ * @param {string} xml the oracle's word/document.xml
+ * @returns {Array<{anchor: string, page: string}>}
+ */
+function readTocPageNumbers(xml) {
+  const field = findTocField(xml);
+  if (!field) return [];
+  const span = xml.slice(field.start, field.end);
+
+  const out = [];
+  const re =
+    /<w:instrText\b[^>]*>\s*PAGEREF\s+(\S+)\s+\\h\s*<\/w:instrText>([\s\S]*?)<w:fldChar\b[^>]*w:fldCharType="end"[^>]*\/>/g;
+  let m;
+  while ((m = re.exec(span)) !== null) {
+    // The cached result is the LAST text node before the field's `end`; Word
+    // writes an empty run and a `separate` in between.
+    const texts = [...m[2].matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)];
+    out.push({
+      anchor: m[1],
+      page: texts.length ? texts[texts.length - 1][1].trim() : '',
+    });
+  }
+  return out;
+}
+
+// ===========================================================================
+// header parts — the running head over the Contents
+// ===========================================================================
+
+/**
+ * ---------------------------------------------------------------------------
+ * WHY THE CONTENTS PAGES SAY "FOREWORD" AND "BEFORE YOU ASK"
+ * ---------------------------------------------------------------------------
+ * The running heads are STYLEREF fields: the recto header prints the current
+ * `Heading 1`, the verso header the current `Heading 2`. STYLEREF in a header
+ * looks for its style on the current page first; failing that it searches
+ * BACKWARD to the start of the document; failing that it searches FORWARD to
+ * the end. On the Contents pages all three headings styles are absent and there
+ * is nothing before them, so the forward search wins and the header prints the
+ * first heading of the BODY. LaTeX prints "Contents" because it sets the mark
+ * explicitly; Word cannot be argued out of the search order.
+ *
+ * There is no field that fixes this, so the fix is structural, and cheap
+ * because the structure is already there: the paragraph docx-postprocess
+ * inserts before the Foreword ENDS the front-matter section, so the title page
+ * and the Contents are already a section of their own. Give that section its
+ * own two header parts, identical to the book's but with the STYLEREF replaced
+ * by the literal word "Contents", and nothing else in the document is touched.
+ *
+ * The title page is unaffected: the section carries `<w:titlePg/>`, so its
+ * first page uses the `first` header (empty) either way.
+ *
+ * NON-FATAL. If the header parts do not have the shape this expects, the
+ * Contents keeps the wrong running head and the build says so. A cosmetic
+ * running head is not worth failing a book over.
+ */
+const CONTENTS_HEADER_PARTS = {
+  default: { part: 'word/headerContentsOdd.xml', rid: 'rIdContentsHeaderOdd' },
+  even: { part: 'word/headerContentsEven.xml', rid: 'rIdContentsHeaderEven' },
+};
+
+const HEADER_CT =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml';
+const HEADER_REL_TYPE =
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header';
+
+/**
+ * Replace a header's STYLEREF field with literal text, keeping everything else
+ * — including the PAGE field that prints the folio, and the rule under the
+ * header table.
+ *
+ * @returns {string|null} the new XML, or null if there is no STYLEREF field
+ */
+function styleRefToLiteral(headerXml, text) {
+  const field =
+    /<w:r>\s*<w:fldChar w:fldCharType="begin"\s*\/>\s*<\/w:r>\s*<w:r>\s*<w:instrText\b[^>]*>\s*STYLEREF[\s\S]*?<w:fldChar w:fldCharType="end"\s*\/>\s*<\/w:r>/;
+  if (!field.test(headerXml)) return null;
+  return headerXml.replace(
+    field,
+    `<w:r><w:t xml:space="preserve">${escText(text)}</w:t></w:r>`
+  );
+}
+
+/**
+ * Point the front-matter section at its own headers.
+ *
+ * @param {object} io {read, write, exists} over the unzipped package
+ * @param {string} docXml document.xml, AFTER insertChapterSections
+ * @param {string} text what the running head should say
+ * @returns {{xml: string, applied: boolean, reason: string|null, parts: string[]}}
+ */
+function applyContentsHeader(io, docXml, text) {
+  const skip = (reason) => ({ xml: docXml, applied: false, reason, parts: [] });
+
+  // The first paragraph-level sectPr is the one that terminates the front
+  // matter. Assert it rather than assume it: everything before it must contain
+  // the TOC field, or this is not the section we think it is.
+  GENERATED_BREAK_RE.lastIndex = 0;
+  const first = GENERATED_BREAK_RE.exec(docXml);
+  GENERATED_BREAK_RE.lastIndex = 0;
+  if (!first) return skip('no generated section break to attach it to');
+  if (!/<w:instrText\b[^>]*>\s*TOC\b/.test(docXml.slice(0, first.index))) {
+    return skip(
+      'the first section break does not follow the TOC field, so the front matter ' +
+        'is not the section it terminates'
+    );
+  }
+
+  // Already done. Only reachable by re-running on our own output (the build
+  // always starts from fresh pandoc output), but without this a second pass
+  // would go looking for a STYLEREF in a header that no longer has one and
+  // report the success as a failure.
+  const already = Object.values(CONTENTS_HEADER_PARTS).every(
+    (s) => io.exists(s.part) && new RegExp(`r:id="${s.rid}"`).test(first[0])
+  );
+  if (already) {
+    return {
+      xml: docXml,
+      applied: true,
+      reason: null,
+      parts: Object.values(CONTENTS_HEADER_PARTS).map((s) => s.part),
+    };
+  }
+
+  const rels = 'word/_rels/document.xml.rels';
+  if (!io.exists(rels)) return skip(`${rels} is missing`);
+  let relsXml = io.read(rels);
+  let ctXml = io.read('[Content_Types].xml');
+  let breakXml = first[0];
+  const written = [];
+
+  for (const [type, spec] of Object.entries(CONTENTS_HEADER_PARTS)) {
+    const ref = new RegExp(`<w:headerReference\\b[^>]*w:type="${type}"[^>]*/>`).exec(breakXml);
+    if (!ref) return skip(`the section break has no ${type} headerReference`);
+    const srcRid = (/r:id="([^"]+)"/.exec(ref[0]) || [])[1];
+    if (!srcRid) return skip(`the ${type} headerReference has no r:id`);
+
+    const target = new RegExp(
+      `<Relationship\\b[^>]*\\bId="${escapeRe(srcRid)}"[^>]*\\bTarget="([^"]+)"[^>]*/?>`
+    ).exec(relsXml);
+    const target2 =
+      target ||
+      new RegExp(
+        `<Relationship\\b[^>]*\\bTarget="([^"]+)"[^>]*\\bId="${escapeRe(srcRid)}"[^>]*/?>`
+      ).exec(relsXml);
+    if (!target2) return skip(`no relationship for ${srcRid}`);
+    const srcPart = `word/${target2[1]}`;
+    if (!io.exists(srcPart)) return skip(`${srcPart} is missing`);
+
+    const literal = styleRefToLiteral(io.read(srcPart), text);
+    if (literal === null) return skip(`${srcPart} has no STYLEREF field to replace`);
+
+    io.write(spec.part, literal);
+    written.push(spec.part);
+
+    // Relationship and content type, both idempotent: a re-run finds them and
+    // adds nothing.
+    if (!relsXml.includes(`Id="${spec.rid}"`)) {
+      relsXml = relsXml.replace(
+        '</Relationships>',
+        `<Relationship Id="${spec.rid}" Target="${path.basename(spec.part)}" ` +
+          `Type="${HEADER_REL_TYPE}"/></Relationships>`
+      );
+    }
+    const override = `<Override PartName="/${spec.part}" ContentType="${HEADER_CT}"/>`;
+    if (!ctXml.includes(`PartName="/${spec.part}"`)) {
+      ctXml = ctXml.replace('</Types>', `${override}</Types>`);
+    }
+
+    breakXml = breakXml.replace(
+      ref[0],
+      `<w:headerReference r:id="${spec.rid}" w:type="${type}"/>`
+    );
+  }
+
+  io.write(rels, relsXml);
+  io.write('[Content_Types].xml', ctXml);
+  return {
+    xml: docXml.slice(0, first.index) + breakXml + docXml.slice(first.index + first[0].length),
+    applied: true,
+    reason: null,
+    parts: written,
+  };
+}
+
+// ===========================================================================
+// settings.xml — stop asking Word to throw the cache away
+// ===========================================================================
+
+/**
+ * Remove the two "this field is stale, please recompute" markers.
+ *
+ * With a real cached result in place, both are actively harmful: they are what
+ * makes Word show the "fields that may refer to other files" modal on open, and
+ * for a reader who answers No (or whose preference answers No for them) the
+ * result is the blank Contents this whole exercise exists to remove. Measured
+ * A/B on the same open-and-count operation with the preference ON: the old file
+ * blocked on the modal and died after 71.3s; the file with cache-and-no-flags
+ * opened in 1.65s.
+ *
+ * The field is still a field. F9 rebuilds it; nothing is frozen.
+ */
+function stripFieldRefreshFlags(docXml, settingsXml) {
+  const dirty = (docXml.match(/\sw:dirty="(?:true|1)"/g) || []).length;
+  const doc = docXml.replace(/(<w:fldChar\b[^>]*?)\sw:dirty="(?:true|1)"/g, '$1');
+  const updates = (settingsXml.match(/<w:updateFields\b[^>]*\/>/g) || []).length;
+  const settings = settingsXml.replace(/<w:updateFields\b[^>]*\/>\s*/g, '');
+  return { doc, settings, dirty, updates };
+}
+
+// ===========================================================================
 // package round-trip
 // ===========================================================================
+
+/**
+ * Zip the working directory to `target`, byte-stably.
+ *
+ * Same round trip everywhere: fixed mtimes, `[Content_Types].xml` first, `-X` to
+ * drop the extra-field metadata that would otherwise vary run to run.
+ */
+function rezip(work, target) {
+  for (const p of walk(work)) fs.utimesSync(p, EPOCH, EPOCH);
+  const abs = path.resolve(target);
+  if (fs.existsSync(abs)) fs.rmSync(abs);
+  const entries = fs
+    .readdirSync(work)
+    .filter((e) => e !== '[Content_Types].xml')
+    .sort();
+  execFileSync('zip', ['-q', '-r', '-X', abs, '[Content_Types].xml', ...entries], {
+    cwd: work,
+  });
+  return abs;
+}
+
+/**
+ * Stage 2+3: get real page numbers into the cache, or degrade cleanly.
+ *
+ * Called with the skeleton already written into `work` and already zipped to
+ * `skeletonPath`. Returns what happened; NEVER throws for an environmental
+ * reason, because a docx build must not become impossible without a GUI Word.
+ *
+ * @returns {{pageNumbers: boolean, oracleMs: number|null, warning: string|null,
+ *            rebuilt: boolean}}
+ */
+function fillTocPageNumbers({ work, skeletonPath, headings, spec, oracle, log }) {
+  const oracleOut = `${skeletonPath}.oracle.docx`;
+  const docPath = path.join(work, 'word/document.xml');
+  const degrade = (warning) => {
+    // The `\n` form: no leader tab, no PAGEREF, a complete clickable Contents
+    // with no numbers. Preferred over leaving blanks after the dot leaders.
+    const doc = fs.readFileSync(docPath, 'utf8');
+    fs.writeFileSync(
+      docPath,
+      replaceTocField(doc, buildTocField(headings, spec, { pageNumbers: false })).xml
+    );
+    return { pageNumbers: false, oracleMs: null, warning, rebuilt: false };
+  };
+
+  let res;
+  try {
+    res = oracle(skeletonPath, oracleOut);
+  } catch (err) {
+    return degrade(`the Word page-number oracle threw: ${err.message}`);
+  }
+  if (!res.ok) {
+    return degrade(res.reason + (res.hint ? ` (${res.hint})` : ''));
+  }
+
+  try {
+    const oracleDoc = execFileSync('unzip', ['-p', oracleOut, 'word/document.xml'], {
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    const got = readTocPageNumbers(oracleDoc);
+
+    if (got.length !== headings.length) {
+      return degrade(
+        `Word returned ${got.length} page numbers for ${headings.length} headings; ` +
+          'the cache would have been misaligned, so it was left without numbers'
+      );
+    }
+    const blank = got.filter((g) => !g.page).length;
+    if (blank) {
+      return degrade(`Word left ${blank} of ${got.length} page numbers blank`);
+    }
+    const nonNumeric = got.filter((g) => !/^[0-9ivxlcdmIVXLCDM]+$/.test(g.page));
+    if (nonNumeric.length) {
+      return degrade(
+        `Word returned ${nonNumeric.length} page number(s) that are not page numbers, ` +
+          `e.g. ${JSON.stringify(nonNumeric[0].page)}`
+      );
+    }
+
+    // If the anchors still match, Word updated our cache in place and did not
+    // rebuild the field — which is what the script asks for, and what makes the
+    // measurement exactly the document we ship. Worth reporting either way.
+    const rebuilt = got.some((g, i) => g.anchor !== headings[i].anchor);
+
+    const doc = fs.readFileSync(docPath, 'utf8');
+    fs.writeFileSync(
+      docPath,
+      replaceTocField(
+        doc,
+        buildTocField(headings, spec, { pageNumbers: true, pages: got.map((g) => g.page) })
+      ).xml
+    );
+    log(
+      `  toc:       ${got.length} page numbers from Word in ${(res.ms / 1000).toFixed(1)}s ` +
+        `(first "${headings[0].title}" p${got[0].page}, last p${got[got.length - 1].page})` +
+        (rebuilt ? ' [Word rebuilt the field; matched positionally]' : '')
+    );
+    return { pageNumbers: true, oracleMs: res.ms, warning: null, rebuilt };
+  } catch (err) {
+    return degrade(`could not read Word's page numbers back: ${err.message}`);
+  } finally {
+    fs.rmSync(oracleOut, { force: true });
+  }
+}
 
 /**
  * Unzip, patch, re-zip. In place unless `outPath` is given.
@@ -467,13 +1220,31 @@ function patchNumbering(xml, markers) {
  * @param {'digital'|'print'} opts.variant which reference doc produced it
  * @param {string} [opts.outPath] write here instead of over the input
  * @param {(msg: string) => void} [opts.log]
+ * @param {'auto'|'never'} [opts.tocPageNumbers='auto'] 'never' skips the Word
+ *   oracle entirely and ships the page-number-free Contents. 'auto' uses Word
+ *   when it is there and degrades to that same Contents when it is not.
+ * @param {(inPath: string, outPath: string) => object} [opts.tocOracle] injected
+ *   for tests; defaults to docx-render.js updateTocCache
  * @returns {{docxPath: string, sections: number, removed: number, levels: number,
- *            bullets: number, ordered: number, bytes: number}}
+ *            bullets: number, ordered: number, bytes: number, toc: object}}
  */
-function postProcessDocx({ docxPath, variant, outPath, log = () => {} }) {
+function postProcessDocx({
+  docxPath,
+  variant,
+  outPath,
+  log = () => {},
+  tocPageNumbers = 'auto',
+  tocOracle,
+  contentsHeader = true,
+}) {
   const spec = styleSpec.resolve(variant);
   if (!fs.existsSync(docxPath)) {
     throw new Error(`docx-postprocess: no such file: ${docxPath}`);
+  }
+  if (tocPageNumbers !== 'auto' && tocPageNumbers !== 'never') {
+    throw new Error(
+      `docx-postprocess: tocPageNumbers must be 'auto' or 'never', got ${JSON.stringify(tocPageNumbers)}`
+    );
   }
   const target = outPath || docxPath;
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'docxpp-'));
@@ -508,17 +1279,91 @@ function postProcessDocx({ docxPath, variant, outPath, log = () => {} }) {
         `bullets ${spec.listMarkers.bullets.join(' ')}`
     );
 
-    // Stable mtimes so re-running produces byte-identical bytes.
-    for (const p of walk(work)) fs.utimesSync(p, EPOCH, EPOCH);
-    const abs = path.resolve(target);
-    if (fs.existsSync(abs)) fs.rmSync(abs);
-    const entries = fs
-      .readdirSync(work)
-      .filter((e) => e !== '[Content_Types].xml')
-      .sort();
-    execFileSync('zip', ['-q', '-r', '-X', abs, '[Content_Types].xml', ...entries], {
-      cwd: work,
-    });
+    // ---- the Contents pages' running head ---------------------------------
+    const io = {
+      exists: (rel) => fs.existsSync(path.join(work, rel)),
+      read: (rel) => fs.readFileSync(path.join(work, rel), 'utf8'),
+      write: (rel, data) => fs.writeFileSync(path.join(work, rel), data),
+    };
+    const head = contentsHeader
+      ? applyContentsHeader(io, sect.xml, TOC_HEADING_TEXT)
+      : { xml: sect.xml, applied: false, reason: 'disabled by caller', parts: [] };
+    log(
+      head.applied
+        ? `  heading:   front-matter running head -> "${TOC_HEADING_TEXT}" ` +
+          `(${head.parts.map((p) => path.basename(p)).join(', ')})`
+        : `  heading:   front-matter running head left as-is: ${head.reason}`
+    );
+
+    // ---- table of contents, stage 1: styles + skeleton --------------------
+    const stylesPath = path.join(work, 'word/styles.xml');
+    const tocStyles = injectTocStyles(fs.readFileSync(stylesPath, 'utf8'), spec);
+    fs.writeFileSync(stylesPath, tocStyles.xml);
+
+    const headings = collectTocHeadings(head.xml, spec);
+    const wantPages = tocPageNumbers === 'auto';
+    let doc = replaceTocField(
+      head.xml,
+      buildTocField(headings, spec, { pageNumbers: wantPages })
+    ).xml;
+
+    // The field is live but no longer advertised as stale, so Word shows the
+    // cache instead of a modal. Do this BEFORE the oracle: the oracle opens
+    // this very file, and the modal is exactly what would hang it.
+    const settingsPath = path.join(work, 'word/settings.xml');
+    const hasSettings = fs.existsSync(settingsPath);
+    const flags = stripFieldRefreshFlags(
+      doc,
+      hasSettings ? fs.readFileSync(settingsPath, 'utf8') : ''
+    );
+    doc = flags.doc;
+    if (hasSettings) fs.writeFileSync(settingsPath, flags.settings);
+    fs.writeFileSync(docPath, doc);
+
+    const byLevel = [1, 2, 3].map((l) => headings.filter((h) => h.level === l).length);
+    log(
+      `  toc:       ${headings.length} entries (${byLevel.join('/')} by level), ` +
+        `styles ${[...tocStyles.injected, ...tocStyles.replaced].join(' ')}, ` +
+        `cleared ${flags.dirty} w:dirty + ${flags.updates} w:updateFields`
+    );
+
+    // ---- table of contents, stages 2 and 3: real page numbers -------------
+    let toc = { pageNumbers: false, oracleMs: null, warning: null, rebuilt: false };
+    if (wantPages) {
+      // The oracle needs a real file to open. Zip the skeleton to scratch, not
+      // over `target`: the shipped path is written exactly once, at the end, so
+      // a Word failure can never leave a half-finished book behind.
+      const skeleton = path.join(work, '..', `${path.basename(work)}-skeleton.docx`);
+      try {
+        rezip(work, skeleton);
+        toc = fillTocPageNumbers({
+          work,
+          skeletonPath: skeleton,
+          headings,
+          spec,
+          oracle:
+            tocOracle ||
+            // Lazy: this pulls in the AppleScript machinery, and the unit tests
+            // (and any Linux caller passing tocPageNumbers:'never') must not.
+            //
+            // 300s, not the library's 900s default. Measured range for this
+            // book is 5-65s (65 was Word contended with a concurrent render),
+            // so 300 is ~5x the worst real case. The point of the shorter
+            // budget is the failure mode: a WEDGED Word - the normal failure
+            // here, see sweepStaleStage() - should cost the build five minutes
+            // and a warning, not a quarter of an hour.
+            ((i, o) => require('./docx-render.js').updateTocCache(i, o, { timeoutMs: 300000 })),
+          log,
+        });
+      } finally {
+        fs.rmSync(skeleton, { force: true });
+      }
+    } else {
+      toc.warning =
+        "tocPageNumbers:'never' was requested, so the Contents ships without page numbers";
+    }
+
+    const abs = rezip(work, target);
 
     return {
       docxPath: abs,
@@ -528,6 +1373,15 @@ function postProcessDocx({ docxPath, variant, outPath, log = () => {} }) {
       bullets: num.bullets,
       ordered: num.ordered,
       bytes: fs.statSync(abs).size,
+      contentsHeader: { applied: head.applied, reason: head.reason },
+      toc: {
+        entries: headings.length,
+        byLevel,
+        styles: [...tocStyles.injected, ...tocStyles.replaced],
+        dirtyCleared: flags.dirty,
+        updateFieldsCleared: flags.updates,
+        ...toc,
+      },
     };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -557,15 +1411,21 @@ if (require.main === module) {
   const files2 = files.filter((f) => f !== variant);
 
   if (files2.length !== 1 || !variant) {
-    console.error('usage: docx-postprocess.js <file.docx> --variant digital|print');
+    console.error(
+      'usage: docx-postprocess.js <file.docx> --variant digital|print [--no-toc-pages]\n' +
+        '  --no-toc-pages  skip the Word page-number oracle and ship a Contents\n' +
+        '                  with working links but no page numbers'
+    );
     process.exit(2);
   }
   try {
     const r = postProcessDocx({
       docxPath: files2[0],
       variant,
+      tocPageNumbers: argv.includes('--no-toc-pages') ? 'never' : 'auto',
       log: (m) => console.log(m),
     });
+    if (r.toc.warning) console.warn(`  WARNING: TOC page numbers: ${r.toc.warning}`);
     console.log(`  wrote ${r.docxPath} (${(r.bytes / 1024).toFixed(1)} KiB)`);
   } catch (err) {
     console.error(err.message);
@@ -580,4 +1440,18 @@ module.exports = {
   buildChapterSectPr,
   findBodySectPr,
   breakParagraph,
+  // table of contents
+  TOC_STYLE_IDS,
+  TOC_HEADING_TEXT,
+  CONTENTS_HEADER_PARTS,
+  styleRefToLiteral,
+  applyContentsHeader,
+  tocStyleXml,
+  injectTocStyles,
+  findTocField,
+  collectTocHeadings,
+  buildTocField,
+  replaceTocField,
+  readTocPageNumbers,
+  stripFieldRefreshFlags,
 };

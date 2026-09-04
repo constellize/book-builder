@@ -99,6 +99,76 @@ const EXPECTED_MEDIA = 70;
 const EXPECTED_FONT_PARTS = 8;
 
 /**
+ * ---------------------------------------------------------------------------
+ * TYPOGRAPHY — the three properties that make the Word output match the PDF
+ * ---------------------------------------------------------------------------
+ * All three failed SILENTLY before they were fixed, which is exactly why they
+ * are asserted here rather than left to the eye:
+ *
+ *   leading         w:line="288" w:lineRule="auto" is valid OOXML and renders
+ *                   without complaint - it just multiplies the FONT's natural
+ *                   line height instead of the book class's \baselineskip, so
+ *                   the page came out 5.8% tight (15.36pt against 16.26pt).
+ *   justification   there was simply no w:jc anywhere in styles.xml.
+ *   hyphenation     CT_Settings is an ORDERED sequence. A hyphenation element
+ *                   in the wrong position is dropped by Word with no error, so
+ *                   a file can carry all four elements and hyphenate nothing.
+ *                   ORDER is the assertion that matters, not presence.
+ *
+ * Values are imported from config/docx-styles.js rather than restated, so this
+ * checks that the build actually SHIPPED the config - not that two hand-copied
+ * lists of numbers still agree with each other.
+ */
+const { LINE, HYPHENATION } = require('../config/docx-styles.js');
+
+/**
+ * Styles whose leading is load-bearing, and the value each must carry.
+ * `rule` is the w:lineRule they must pair it with: an absolute leading with
+ * w:lineRule="auto" is the original bug, so the rule is asserted too.
+ */
+const EXPECTED_LEADING = [
+  { id: 'BodyText', line: LINE.body, rule: 'atLeast' },
+  { id: 'Compact', line: LINE.body, rule: 'atLeast' },
+  { id: 'SourceCode', line: LINE.code, rule: 'atLeast' },
+  { id: 'Caption', line: LINE.caption, rule: 'atLeast' },
+  { id: 'FootnoteText', line: LINE.footnote, rule: 'atLeast' },
+  { id: 'Heading1', line: LINE.h1, rule: 'atLeast' },
+  { id: 'Heading2', line: LINE.h2, rule: 'atLeast' },
+  { id: 'Heading3', line: LINE.h3, rule: 'atLeast' },
+];
+
+/**
+ * Required w:jc per style. See config/docx-styles.js for the measurements
+ * behind each; the short version is that prose and callouts are justified in
+ * the LaTeX PDF and code and table cells are not.
+ */
+const EXPECTED_JC = [
+  { id: 'BodyText', jc: 'both' },
+  { id: 'Heading1', jc: 'both' },
+  { id: 'Heading2', jc: 'both' },
+  { id: 'SourceCode', jc: 'left' },
+  { id: 'Compact', jc: 'left' },
+];
+
+/**
+ * The hyphenation elements, in the order CT_Settings requires. Word drops any
+ * that arrive out of sequence, without complaint.
+ */
+const HYPHENATION_ORDER = [
+  'w:autoHyphenation',
+  'w:consecutiveHyphenLimit',
+  'w:hyphenationZone',
+  ...(HYPHENATION.doNotHyphenateCaps ? ['w:doNotHyphenateCaps'] : []),
+];
+
+/**
+ * Elements that must BRACKET the hyphenation block in settings.xml. The block
+ * sits between defaultTabStop and evenAndOddHeaders in the schema; getting this
+ * wrong is how the evenAndOddHeaders insertion used to collide with it.
+ */
+const HYPHENATION_BRACKET = { before: 'w:defaultTabStop', after: 'w:evenAndOddHeaders' };
+
+/**
  * Top-level headings that must NOT carry a section number: the front matter,
  * the bibliography and both appendices. Chapters 1-9 must carry one.
  *
@@ -116,6 +186,18 @@ const UNNUMBERED_HEADINGS = [
 
 /** Chapters that must carry a section number, in order. */
 const EXPECTED_CHAPTER_NUMBERS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+
+/**
+ * How many Contents entries there must be: one per Heading1-3, no more, no less.
+ *
+ * Not a hard-coded 159. The count is derived from the document's own headings by
+ * checkToc(), because a hard-coded number would go stale the first time a
+ * section is added and would then be "fixed" by editing this line rather than by
+ * looking at why it changed. What IS asserted absolutely is the floor below —
+ * a cache that has collapsed to a handful of entries is broken however many
+ * headings the manuscript happens to have today.
+ */
+const MIN_TOC_ENTRIES = 100;
 
 /** Paragraph style whose every occurrence opens a new odd-page section. */
 const CHAPTER_STYLE = 'Heading1';
@@ -387,6 +469,167 @@ function checkFonts(pkg, report) {
     refs === EXPECTED_FONT_PARTS,
     'font relationships',
     `${refs} fontTable.xml.rels entries (expected ${EXPECTED_FONT_PARTS})`
+  );
+}
+
+/**
+ * Pull one style's body out of styles.xml.
+ * @returns {string|null}
+ */
+function styleBody(styles, id) {
+  const m = new RegExp(
+    `<w:style\\b[^>]*w:styleId="${id}"[^>]*>([\\s\\S]*?)</w:style>`
+  ).exec(styles);
+  return m ? m[1] : null;
+}
+
+/**
+ * Leading and justification, read out of the shipped styles.xml.
+ *
+ * This is the check that would have caught the original defect. Both halves are
+ * silent failures: `w:lineRule="auto"` with an absolute-looking w:line renders
+ * perfectly happily at the wrong size, and a missing w:jc just looks like a
+ * design choice until you hold it next to the PDF.
+ */
+function checkTypography(pkg, report) {
+  const styles = pkg.read('word/styles.xml');
+
+  // ---- docDefaults: the value every unstyled paragraph inherits -----------
+  const defaults = /<w:pPrDefault>([\s\S]*?)<\/w:pPrDefault>/.exec(styles);
+  const dm = defaults && /<w:spacing\b[^>]*\/>/.exec(defaults[1]);
+  const dLine = dm && /w:line="(\d+)"/.exec(dm[0]);
+  const dRule = dm && /w:lineRule="(\w+)"/.exec(dm[0]);
+  report.add(
+    !!dLine && Number(dLine[1]) === LINE.body && dRule && dRule[1] === 'atLeast',
+    'docDefaults leading',
+    dm
+      ? `${dLine ? dLine[1] : '?'} ${dRule ? dRule[1] : '?'} ` +
+        `(expected ${LINE.body} atLeast = ${(LINE.body / 20).toFixed(2)}pt)`
+      : 'docDefaults has no <w:spacing>'
+  );
+
+  // ---- per-style leading -------------------------------------------------
+  const badLeading = [];
+  for (const want of EXPECTED_LEADING) {
+    const body = styleBody(styles, want.id);
+    if (body === null) {
+      badLeading.push(`${want.id}: style absent`);
+      continue;
+    }
+    const sp = /<w:spacing\b[^>]*\/>/.exec(body);
+    const line = sp && /w:line="(\d+)"/.exec(sp[0]);
+    const rule = sp && /w:lineRule="(\w+)"/.exec(sp[0]);
+    if (!line || Number(line[1]) !== want.line || !rule || rule[1] !== want.rule) {
+      badLeading.push(
+        `${want.id}: ${line ? line[1] : 'none'}/${rule ? rule[1] : 'none'} ` +
+          `(want ${want.line}/${want.rule})`
+      );
+    }
+  }
+  report.add(
+    badLeading.length === 0,
+    'style leading',
+    badLeading.length
+      ? badLeading.join('; ')
+      : `${EXPECTED_LEADING.length} styles carry their measured leading ` +
+        `(body ${(LINE.body / 20).toFixed(2)}pt, code ${(LINE.code / 20).toFixed(2)}pt)`
+  );
+
+  // ---- justification -----------------------------------------------------
+  const badJc = [];
+  for (const want of EXPECTED_JC) {
+    const body = styleBody(styles, want.id);
+    if (body === null) {
+      badJc.push(`${want.id}: style absent`);
+      continue;
+    }
+    const m = /<w:jc w:val="(\w+)"\s*\/>/.exec(body);
+    if (!m || m[1] !== want.jc) {
+      badJc.push(`${want.id}: ${m ? m[1] : 'none'} (want ${want.jc})`);
+    }
+  }
+  report.add(
+    badJc.length === 0,
+    'justification',
+    badJc.length
+      ? badJc.join('; ')
+      : EXPECTED_JC.map((w) => `${w.id}=${w.jc}`).join(' ')
+  );
+}
+
+/**
+ * Hyphenation, and above all its POSITION in settings.xml.
+ *
+ * CT_Settings is an ordered sequence. Word does not reject an out-of-order
+ * child, it ignores it — so the failure mode this guards against is a document
+ * that contains every hyphenation element, passes a "is it present?" check, and
+ * hyphenates nothing. Presence is necessary; order is what makes it work.
+ */
+function checkHyphenation(pkg, report) {
+  const settings = pkg.has('word/settings.xml') ? pkg.read('word/settings.xml') : '';
+  if (!settings) {
+    report.add(false, 'hyphenation enabled', 'no word/settings.xml');
+    return;
+  }
+
+  // Element order as it actually appears in the shipped part.
+  const order = [...settings.matchAll(/<(w:[A-Za-z0-9]+)[\s/>]/g)].map((m) => m[1]);
+  const at = (tag) => order.indexOf(tag);
+
+  const missing = HYPHENATION_ORDER.filter((t) => at(t) === -1);
+  report.add(
+    missing.length === 0,
+    'hyphenation enabled',
+    missing.length
+      ? `settings.xml is missing ${missing.join(', ')}`
+      : `autoHyphenation on, zone ${HYPHENATION.zone}tw ` +
+        `(${(HYPHENATION.zone / 1440).toFixed(3)}in), ` +
+        `consecutive limit ${HYPHENATION.consecutiveLimit}` +
+        (HYPHENATION.doNotHyphenateCaps ? ', caps exempt' : '')
+    );
+  if (missing.length) return;
+
+  // Strictly increasing positions, and inside the defaultTabStop ..
+  // evenAndOddHeaders window the schema allows.
+  const idx = HYPHENATION_ORDER.map(at);
+  const ascending = idx.every((v, i) => i === 0 || v > idx[i - 1]);
+  const lo = at(HYPHENATION_BRACKET.before);
+  const hi = at(HYPHENATION_BRACKET.after);
+  const bracketed =
+    lo !== -1 && (hi === -1 || (idx[0] > lo && idx[idx.length - 1] < hi));
+
+  report.add(
+    ascending && bracketed,
+    'hyphenation in schema order',
+    ascending && bracketed
+      ? `${HYPHENATION_ORDER.join(' < ')}, between ` +
+        `${HYPHENATION_BRACKET.before} and ${HYPHENATION_BRACKET.after}`
+      : `out of CT_Settings order - Word will silently ignore these: ` +
+        order
+          .filter(
+            (t) =>
+              HYPHENATION_ORDER.includes(t) ||
+              t === HYPHENATION_BRACKET.before ||
+              t === HYPHENATION_BRACKET.after
+          )
+          .join(' ')
+  );
+
+  // The zone the config tuned must be the zone that shipped.
+  const zone = /<w:hyphenationZone w:val="(\d+)"\s*\/>/.exec(settings);
+  const limit = /<w:consecutiveHyphenLimit w:val="(\d+)"\s*\/>/.exec(settings);
+  const ok =
+    zone &&
+    Number(zone[1]) === HYPHENATION.zone &&
+    limit &&
+    Number(limit[1]) === HYPHENATION.consecutiveLimit;
+  report.add(
+    !!ok,
+    'hyphenation tuned values',
+    ok
+      ? `zone ${zone[1]}tw, consecutiveHyphenLimit ${limit[1]}`
+      : `zone ${zone ? zone[1] : 'none'} / limit ${limit ? limit[1] : 'none'} ` +
+        `(config says ${HYPHENATION.zone} / ${HYPHENATION.consecutiveLimit})`
   );
 }
 
@@ -685,6 +928,244 @@ function checkHeadingNumbering(headings, report) {
     unexpectedNumbering.length === 0
       ? `unnumbered: ${unnumbered.map((h) => h.title.slice(0, 24)).join(', ')}`
       : `unexpected unnumbered headings: ${unexpectedNumbering.join(', ')}`
+  );
+}
+
+/**
+ * The table of contents must ship with a POPULATED CACHE.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS EXISTS TO CATCH, AND WHY NOTHING ELSE CAUGHT IT
+ * ---------------------------------------------------------------------------
+ * pandoc writes the TOC field with an EMPTY cached result — nothing at all
+ * between `<w:fldChar w:fldCharType="separate"/>` and `.../"end"`. A Word field
+ * shows its cached result until something updates it, so for the whole life of
+ * this target the book opened with a BLANK Contents page. Every PDF looked
+ * right because the render path updates fields on the way out, which is exactly
+ * how a defect survives a proof: the artefact that was checked was not the
+ * artefact that shipped.
+ *
+ * So the assertions here are deliberately about the CACHE, not about the field:
+ *
+ *   1. one entry per Heading1-3, in the same order and at the same levels;
+ *   2. every entry links to a bookmark that exists (a TOC that jumps nowhere is
+ *      no better than a blank one);
+ *   3. the TOC1-3 styles the entries name are actually defined;
+ *   4. no `w:dirty` and no `<w:updateFields/>` — both ask Word to throw the
+ *      cache away and recompute, and a reader whose "update links at open"
+ *      preference is off (the author's is) then sees the blank page again.
+ *
+ * Page numbers are checked separately and are only a WARNING-level absence:
+ * a Contents with working links and no page numbers is the documented no-Word
+ * degradation, and a build on a machine without Word must still pass.
+ */
+function checkToc(doc, pkg, headings, report) {
+  const styles = pkg.read('word/styles.xml');
+
+  // --- the field, and its cached result ------------------------------------
+  const instr = /<w:instrText\b[^>]*>\s*(TOC\b[^<]*?)\s*<\/w:instrText>/.exec(doc);
+  if (!instr) {
+    report.add(false, 'toc field', 'document.xml contains no TOC field at all');
+    return;
+  }
+
+  const entryRe =
+    /<w:p\b(?:\s[^>]*)?>(?:(?!<\/w:p>)[\s\S])*?<w:pStyle w:val="(TOC[123])"\s*\/>(?:(?!<\/w:p>)[\s\S])*?<\/w:p>/g;
+  const entries = [...doc.matchAll(entryRe)].map((m) => ({
+    level: Number(m[1].slice(3)),
+    xml: m[0],
+    anchor: (/<w:hyperlink\b[^>]*w:anchor="([^"]+)"/.exec(m[0]) || [])[1] || null,
+    text: normalizeText(textOf(m[0])),
+    page: (() => {
+      // The cached PAGEREF result: the last text node inside the hidden runs.
+      const hidden = [
+        ...m[0].matchAll(
+          /<w:instrText\b[^>]*>\s*PAGEREF\b[\s\S]*?<w:fldChar\b[^>]*w:fldCharType="end"[^>]*\/>/g
+        ),
+      ];
+      if (!hidden.length) return null;
+      const t = [...hidden[0][0].matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)];
+      return t.length ? unescapeXml(t[t.length - 1][1]).trim() : '';
+    })(),
+  }));
+
+  const bodyOpen = /<w:body\b[^>]*>/.exec(doc);
+  const bodyStart = bodyOpen ? bodyOpen.index + bodyOpen[0].length : 0;
+  const allHeadings = [
+    ...doc.slice(bodyStart).matchAll(/<w:pStyle w:val="Heading([1-3])"\s*\/>/g),
+  ].map((m) => Number(m[1]));
+
+  report.add(
+    entries.length >= MIN_TOC_ENTRIES && entries.length === allHeadings.length,
+    'toc cache populated',
+    `${entries.length} cached TOC1-3 entry paragraphs for ${allHeadings.length} ` +
+      `Heading1-3 paragraphs (expected equal, and at least ${MIN_TOC_ENTRIES})` +
+      (entries.length === 0
+        ? ' - the field has an EMPTY cached result, so Word will show a BLANK Contents page on open'
+        : '')
+  );
+
+  const levelMismatch = entries.findIndex((e, i) => e.level !== allHeadings[i]);
+  report.add(
+    entries.length > 0 && levelMismatch === -1,
+    'toc entry levels',
+    entries.length === 0
+      ? 'no entries to compare - the cache is empty'
+      : levelMismatch === -1
+        ? `levels match the headings one for one (${[1, 2, 3]
+            .map((l) => entries.filter((e) => e.level === l).length)
+            .join('/')} by level)`
+        : `entry ${levelMismatch} is TOC${entries[levelMismatch].level} but heading ` +
+          `${levelMismatch} is Heading${allHeadings[levelMismatch]}`
+  );
+
+  // --- every entry has somewhere to jump to --------------------------------
+  const bookmarks = new Set(
+    [...doc.matchAll(/<w:bookmarkStart\b[^>]*w:name="([^"]+)"/g)].map((m) => m[1])
+  );
+  const dangling = entries.filter((e) => !e.anchor || !bookmarks.has(e.anchor));
+  report.add(
+    entries.length > 0 && dangling.length === 0,
+    'toc links resolve',
+    entries.length === 0
+      ? 'no entries to check - the cache is empty'
+      : dangling.length === 0
+      ? `all ${entries.length} entries link to a bookmark that exists`
+      : `${dangling.length} entries link nowhere, e.g. ` +
+        dangling
+          .slice(0, 3)
+          .map((e) => `"${e.text.slice(0, 30)}" -> ${e.anchor === null ? '(no anchor)' : e.anchor}`)
+          .join('; ')
+  );
+
+  // --- the styles the entries name must exist ------------------------------
+  const missingStyles = ['TOC1', 'TOC2', 'TOC3'].filter(
+    (id) => !new RegExp(`<w:style\\b[^>]*w:styleId="${id}"`).test(styles)
+  );
+  report.add(
+    missingStyles.length === 0,
+    'toc styles defined',
+    missingStyles.length === 0
+      ? 'styles.xml defines TOC1, TOC2 and TOC3'
+      : `styles.xml has no ${missingStyles.join(', ')} - Word would fall back to its ` +
+        'gallery defaults, which are a different size and a different indent'
+  );
+
+  // --- nothing asking Word to discard the cache ----------------------------
+  const dirty = (doc.match(/<w:fldChar\b[^>]*\sw:dirty="(?:true|1)"/g) || []).length;
+  const settings = pkg.has('word/settings.xml') ? pkg.read('word/settings.xml') : '';
+  const updateFields = (settings.match(/<w:updateFields\b[^>]*\/>/g) || []).length;
+  report.add(
+    dirty === 0 && updateFields === 0,
+    'toc cache not marked stale',
+    dirty === 0 && updateFields === 0
+      ? 'no w:dirty fields and no <w:updateFields/>, so Word shows the cache without prompting'
+      : `${dirty} w:dirty field(s) and ${updateFields} <w:updateFields/> - Word will ask to ` +
+        'recompute, and a reader who declines (or whose preference declines for them) gets ' +
+        'a blank Contents'
+  );
+
+  // --- page numbers: present, plausible, monotonic --------------------------
+  const withPages = entries.filter((e) => e.page);
+  const numeric = withPages.filter((e) => /^\d+$/.test(e.page)).map((e) => Number(e.page));
+  const descending = numeric.filter((n, i) => i > 0 && n < numeric[i - 1]).length;
+  const pagesOk =
+    entries.length > 0 &&
+    withPages.length === entries.length &&
+    numeric.length === entries.length &&
+    descending === 0;
+
+  if (pagesOk) {
+    report.add(
+      true,
+      'toc page numbers',
+      `all ${entries.length} cached and non-decreasing, p${numeric[0]}-p${numeric[numeric.length - 1]}`
+    );
+  } else if (withPages.length === 0 && !/\\n\b/.test(instr[1])) {
+    // Dot leaders running to a blank. Neither of the two supported shapes.
+    report.add(
+      false,
+      'toc page numbers',
+      'the field asks for page numbers but none are cached, so every entry ends in a ' +
+        'dot leader running to nothing. Re-run docx-postprocess.js with Word available.'
+    );
+  } else if (withPages.length === 0) {
+    // The documented no-Word degradation. Explicitly requested by `\n`.
+    report.add(
+      true,
+      'toc page numbers',
+      'none, and the field instruction carries \\n (page numbers suppressed) - this is the ' +
+        'no-Word degradation: links work, numbers absent'
+    );
+  } else {
+    report.add(
+      false,
+      'toc page numbers',
+      `${withPages.length}/${entries.length} cached, ${numeric.length} numeric, ` +
+        `${descending} out of order`
+    );
+  }
+}
+
+/**
+ * The Contents pages must not be headed with the name of some other chapter.
+ *
+ * The running heads are STYLEREF fields. In a header, STYLEREF looks for its
+ * style on the current page, then BACKWARD to the start of the document, then
+ * FORWARD to the end. On the Contents pages there is no Heading1 or Heading2 on
+ * the page and none before it, so the forward search wins and Word prints the
+ * first heading of the BODY - the pages headed themselves "Foreword" and
+ * "Before You Ask". docx-postprocess.js gives the front-matter section its own
+ * two header parts carrying the literal word instead.
+ *
+ * Checked structurally, from the first PARAGRAPH-level sectPr (the one that
+ * terminates the front matter), so this fails if the rewiring silently stops
+ * happening - which it would if the header parts changed shape, since
+ * applyContentsHeader() is deliberately non-fatal.
+ */
+function checkContentsHeader(doc, pkg, report) {
+  const sect = /<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>\s*<\/w:pPr>/.exec(doc);
+  if (!sect) {
+    report.add(false, 'contents running head', 'no paragraph-level <w:sectPr> in the document');
+    return;
+  }
+  const rels = pkg.has('word/_rels/document.xml.rels')
+    ? pkg.read('word/_rels/document.xml.rels')
+    : '';
+
+  const bad = [];
+  const seen = [];
+  for (const type of ['default', 'even']) {
+    const ref = new RegExp(`<w:headerReference\\b[^>]*w:type="${type}"[^>]*/>`).exec(sect[0]);
+    if (!ref) {
+      bad.push(`${type}: the front-matter section has no headerReference`);
+      continue;
+    }
+    const rid = (/r:id="([^"]+)"/.exec(ref[0]) || [])[1];
+    const rel = new RegExp(`<Relationship\\b[^>]*\\bId="${rid}"[^>]*?/?>`).exec(rels);
+    const target = rel && (/\bTarget="([^"]+)"/.exec(rel[0]) || [])[1];
+    if (!target || !pkg.has(`word/${target}`)) {
+      bad.push(`${type}: ${rid} resolves to nothing`);
+      continue;
+    }
+    const xml = pkg.read(`word/${target}`);
+    const hasLiteral = normalizeText(textOf(xml)).includes('Contents');
+    const hasStyleRef = /STYLEREF/.test(xml);
+    seen.push(`${type}=${target}`);
+    if (!hasLiteral || hasStyleRef) {
+      bad.push(
+        `${type}: ${target} ${hasStyleRef ? 'still carries a STYLEREF field' : 'does not say "Contents"'}`
+      );
+    }
+  }
+
+  report.add(
+    bad.length === 0,
+    'contents running head',
+    bad.length === 0
+      ? `front matter has its own headers reading "Contents" (${seen.join(', ')})`
+      : bad.join('; ') +
+        ' - the Contents pages will be headed with the name of the first body heading instead'
   );
 }
 
@@ -996,7 +1477,11 @@ function main(argv) {
     checkNoRawLatex(doc, report);
     checkHeadingNumbering(headings, report);
     checkFonts(pkg, report);
+    checkTypography(pkg, report);
+    checkHyphenation(pkg, report);
     checkOddPageSections(doc, headings, report);
+    checkToc(doc, pkg, headings, report);
+    checkContentsHeader(doc, pkg, report);
 
     if (render) checkRendered(docxPath, render, headings, report, renderTimeout);
   } finally {

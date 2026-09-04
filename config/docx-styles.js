@@ -192,10 +192,145 @@ const SIZE = {
 };
 
 /**
- * Line spacing, twips, with w:lineRule="auto" (i.e. a multiple of single).
- * 240 = single. linestretch: 1.2 -> 288.
+ * ---------------------------------------------------------------------------
+ * LEADING — ABSOLUTE, IN TWENTIETHS OF A POINT, NOT MULTIPLES OF SINGLE
+ * ---------------------------------------------------------------------------
+ * These used to be `w:lineRule="auto"` multipliers (288 = 1.2 x single) on the
+ * theory that `linestretch: 1.2` and `w:line="288"` say the same thing. They do
+ * not, and the difference is visible on every page.
+ *
+ *   LaTeX   \setstretch{1.2} scales \baselineskip, and book-class 11pt sets
+ *           \baselineskip to 13.55pt.          -> 13.55 x 1.2 = 16.26pt
+ *   Word    w:lineRule="auto" scales the FONT'S OWN natural line height.
+ *           Atkinson Hyperlegible Next hhea: ascent 796, descent -161,
+ *           lineGap 200, upem 1000 -> 1.157em -> 12.73pt at 11pt.
+ *                                              -> 12.73 x 1.2 = 15.27pt
+ *
+ * i.e. the same "1.2" applied to two different bases, 5.8% apart. Measured with
+ * pdftotext -bbox over pp30-60 of both renders, modal consecutive-baseline
+ * delta: LaTeX 16.26pt, Word 15.36pt. The fix is to stop expressing leading as
+ * a ratio at all and pin the absolute value the LaTeX PDF actually produces.
+ *
+ * ON THE 13.55 ABOVE, because the obvious number is 13.60. The book class's
+ * 11pt \baselineskip is usually quoted as 13.6pt, and 13.6 x 1.2 = 16.32 would
+ * make 326 (16.30pt) an exact hit. The PDF says otherwise: over pp20-120 the
+ * consecutive-baseline delta is 16.26pt on 100.0% of 402 samples, with no
+ * second mode at all, and the unstretched leading measured independently off
+ * the figure captions is 13.55pt -- and 13.55 x 1.2 = 16.26 exactly. So the
+ * real target is 16.26pt = 325.2 twentieths, and the theoretical bullseye is
+ * 325, not 326.
+ *
+ * 326 ships anyway, deliberately. Word does not render a single clean pitch: it
+ * snaps baselines to a device grid, giving 16.32pt on 90.2% of lines and
+ * 16.08pt on 9.4%, for a weighted mean of 16.303pt -- i.e. it delivers exactly
+ * what 326 asks for, with +/-0.03pt of grid noise on any individual line. The
+ * residual against LaTeX is 0.043pt per line (0.26%), which is an order of
+ * magnitude below that noise, and 326 already reproduces the print PDF's page
+ * count exactly (190 = 190). Moving to 325 would chase 0.04pt through a full
+ * rebuild and risk that exact match for nothing visible.
+ *
+ * EVERY NUMBER BELOW IS MEASURED OFF build/print/constellize-book.pdf, not
+ * computed. The measurement bucketed rendered lines by their left-edge offset
+ * from the body margin (which is what distinguishes body / list / callout /
+ * code geometrically) and took the modal baseline delta in each bucket:
+ *
+ *   offset  +0.0pt  body prose        16.26pt   <- body
+ *   offset +15.6pt  callout text      16.26pt   <- body (callouts are BodyText)
+ *   offset +17.0pt  list item L1      16.26pt   <- body
+ *   offset +27.3pt  list item L2      16.26pt   <- body
+ *   offset  +9.7pt  code              14.35pt   <- code
+ *   wrapped chapter titles (\Huge)    35.86pt   <- h1  (n=6)
+ *   wrapped section titles (\Large)   21.52pt   <- h2  (n=2)
+ *   figure captions                   13.55pt   <- caption (n=51 wrapped)
+ *   footnote text                     11.16pt   <- footnote
+ *   TOC entries                       16.26-16.33pt -> body, but NOT inherited:
+ *                                     TOC1-3 are built in docx-postprocess.js
+ *                                     (tocStyleXml) and are basedOn BodyText yet
+ *                                     OVERRIDE w:spacing, so they take LINE.body
+ *                                     explicitly. Change both places together.
+ *
+ * h3 is the one value with no wrapped instance in the book to measure. It is
+ * derived from the model the other two validate: LaTeX \large at 11pt base is
+ * 12.1pt/14pt, and 14 x 1.2 = 16.8pt. That model predicts h1 as 30 x 1.2 = 36
+ * (measured 35.86) and h2 as 18 x 1.2 = 21.6 (measured 21.52), so it is good
+ * to better than half a point.
+ *
+ * ALWAYS PAIRED WITH w:lineRule="atLeast", never "exact" — see spacing().
  */
-const LINE = { body: 288, tight: 240 };
+const LINE = {
+  body: 326, // 16.30pt
+  code: 287, // 14.35pt
+  h1: 717, // 35.85pt
+  h2: 430, // 21.50pt
+  h3: 336, // 16.80pt
+  caption: 271, // 13.55pt
+  footnote: 224, // 11.20pt
+
+  /**
+   * The ONE remaining ratio, and the one place it is right: running heads.
+   * 240 = single, w:lineRule="auto". A running head is a single 9pt line
+   * inside a 0.5in header band; giving it body leading would inflate that band
+   * and push it toward the 0.4pt head rule for no gain. See spacing().
+   */
+  tight: 240,
+};
+
+/**
+ * ---------------------------------------------------------------------------
+ * HYPHENATION
+ * ---------------------------------------------------------------------------
+ * Mandatory once the body is justified, not a nicety. Justified text without
+ * hyphenation has to absorb every line's slack in the word spaces, which is
+ * what produces rivers. LaTeX has been hyphenating all along; word/settings.xml
+ * carried no hyphenation elements at all, so the docx was doing neither.
+ *
+ * Whole-book measurement of the LaTeX print PDF (1554 body lines):
+ *   hyphenated lines           170  = 10.94%
+ *   consecutive-hyphen runs    130 singles, 20 pairs, ZERO runs of 3+
+ *   all-caps words hyphenated  1
+ *
+ * so `consecutiveLimit: 2` is not a guess — it is exactly the ceiling LaTeX's
+ * \doublehyphendemerits already enforces here, and `doNotHyphenateCaps` costs
+ * one hyphenation in the whole book while ruling out mangled acronyms (API,
+ * SRE, CODEPROMPTU) for good.
+ *
+ * `zone` is the knob with no LaTeX counterpart: the widest ragged gap Word will
+ * tolerate before it reaches for a hyphen, in twips. Too wide and it never
+ * hyphenates and the rivers come back; too narrow and it hyphenates everything.
+ *
+ * TUNED, NOT ASSUMED. Seven full Word renders of the real book, each measured
+ * over pp9-190 the same way as the LaTeX reference (hyphen-terminated share of
+ * flush-left body lines, and the inter-word gap distribution on full-measure
+ * justified lines only):
+ *
+ *   zone   inches   hyphenated   median gap   p95 gap
+ *    288    0.200     18.08%        3.91pt     5.96pt
+ *    432    0.300     16.42%           -          -
+ *    576    0.400     12.48%        4.13pt     6.05pt
+ *    600    0.417     11.55%        4.16pt     6.14pt
+ *  > 624    0.433     10.75%        4.20pt     6.25pt   <- shipped
+ *    648    0.450     10.07%        4.22pt     6.35pt
+ *    720    0.500      8.53%        4.28pt     6.61pt
+ *   LaTeX  reference  10.91%        3.35pt     4.64pt
+ *
+ * 624 is the value that reproduces LaTeX's own hyphenation rate: 175 hyphenated
+ * lines against LaTeX's 170, out of ~1600. Its consecutive-run profile lands in
+ * the same place too — 147 singles + 14 pairs vs LaTeX's 130 + 20.
+ *
+ * The sweep also settles a question the rate alone cannot. Word's word spaces
+ * are looser than TeX's at EVERY zone (median 3.91-4.28pt vs 3.35pt) because
+ * Word breaks lines greedily while TeX optimises the whole paragraph, and the
+ * gap grows monotonically as the zone widens. So the error is not symmetric:
+ * overshooting the zone costs word spacing on every justified line in the book,
+ * while undershooting only costs some extra hyphens. That rules out the "round"
+ * 0.5in, and is why the shipped value sits on the tight side of the bracket
+ * rather than at 648 — which is marginally closer on rate but looser on colour.
+ */
+const HYPHENATION = {
+  zone: 624, // 0.433in / 31.2pt
+  consecutiveLimit: 2,
+  doNotHyphenateCaps: true,
+};
 
 /** LaTeX \parindent for book class at 11pt is ~17pt. */
 const PARINDENT = 340;
@@ -249,6 +384,65 @@ const rFonts = (name, opts = {}) =>
  */
 const sz = (halfPoints) =>
   `<w:sz w:val="${halfPoints}"/><w:szCs w:val="${halfPoints}"/>`;
+
+/**
+ * Build a `<w:spacing>`.
+ *
+ * WHY THE LINE RULE IS NOT A FREE PARAMETER. Every absolute value in LINE is a
+ * leading in twentieths of a point, and an absolute leading is only meaningful
+ * with `atLeast` or `exact`. Pair one with the inherited `auto` by accident and
+ * Word reads it as a 13.6x multiplier — a silent, spectacular bug. So the rule
+ * defaults to `atLeast` and the only way to get `auto` through THIS helper is to
+ * ask for it by name, which exactly one caller (the running heads) does.
+ *
+ * Note this helper is not the only writer of w:spacing: tocStyleXml() in
+ * scripts/lib/docx-postprocess.js emits its own for TOC1-3. It shipped a literal
+ * 240/auto for one release, which is exactly the bug described above. If you add
+ * another w:spacing writer, route it through here or it will drift the same way.
+ *
+ * `atLeast`, NEVER `exact`: atLeast is max(natural, requested), so a line
+ * carrying an inline image, a superscript footnote mark or a larger glyph grows
+ * to fit. `exact` would clip it. The cost of atLeast is that such a line is
+ * taller than its neighbours; the cost of exact is that the content is gone.
+ *
+ * @param {object} opts
+ * @param {number} [opts.before] space above, twips
+ * @param {number} [opts.after] space below, twips
+ * @param {number|null} [opts.line] leading, twentieths of a point; null to
+ *   inherit the parent style's
+ * @param {'atLeast'|'auto'|'exact'} [opts.rule]
+ * @returns {string} XML
+ */
+const spacing = ({ before = 0, after = 0, line = null, rule = 'atLeast' }) =>
+  `<w:spacing w:before="${before}" w:after="${after}"` +
+  (line === null ? '' : ` w:line="${line}" w:lineRule="${rule}"`) +
+  '/>';
+
+/**
+ * Build a `<w:jc>`.
+ *
+ * Justification is the second half of matching the LaTeX setting: there was no
+ * `w:jc="both"` anywhere in word/styles.xml, so the whole book was ragged-right
+ * against a justified PDF. Measured on the LaTeX print render as the spread of
+ * right-edge x over lines that reach the measure — interquartile range, which
+ * is immune to the tail of paragraph-final lines:
+ *
+ *   context        IQR      verdict
+ *   body prose     1.16pt   justified
+ *   callout text   1.62pt   justified (flush to the box's own right edge)
+ *   captions       1.97pt   justified
+ *   chapter/section titles   land exactly on the margin, and hyphenate
+ *                                     -> justified (titlesec's default; there
+ *                                        is no \raggedright in either template)
+ *   list items     spike at 0pt       -> justified
+ *   code          22.67pt   ragged
+ *   table cells   ~100pt of variation -> ragged (pandoc's LaTeX writer emits
+ *                                        >{\raggedright\arraybackslash}p{...})
+ *
+ * @param {'both'|'left'|'center'|'right'} v
+ * @returns {string} XML
+ */
+const jc = (v) => `<w:jc w:val="${v}"/>`;
 
 /**
  * Build a `w:color`. Emitted without `w:themeColor`/`w:themeShade` on purpose:
@@ -306,21 +500,38 @@ const TITLING_RPR = {
  * that tab jumps to w:defaultTabStop, which is far too wide. 360 twips (0.25in)
  * approximates the `{1em}` separation in \titleformat{\section}.
  *
+ * HEADINGS ARE JUSTIFIED, AND THAT IS NOT A GUESS. The brief for this change
+ * assumed \raggedright, which is indeed what most heading packages do — but
+ * neither book-digital.latex nor book-print.latex contains \raggedright,
+ * \RaggedRight or a titlesec alignment key, and titlesec's default is
+ * justified. The rendered PDF agrees: of six wrapped chapter titles, one
+ * ("Scaling Knowledge and Constellations", p117) ends at x=540.0 against a
+ * margin of exactly 540.0, and two others hyphenate ("...the Constel-" p41,
+ * "...Site Relia-" p135). Ragged-right does neither. The remaining three
+ * overrun the margin by 4.6-14.5pt, which is an overfull \hbox — again, a
+ * justified-only phenomenon.
+ *
+ * `line` is per-level because heading leading tracks heading size: \Huge, \Large
+ * and \large each carry their own \baselineskip and the 1.2 stretch multiplies
+ * all three. See LINE for the measurements.
+ *
  * @param {object} opts
  * @param {number} opts.before space before, twips
  * @param {number} opts.after space after, twips
+ * @param {number} opts.line leading, twentieths of a point
  * @param {number} opts.level 0-based outline level
  * @param {boolean} [opts.pageBreak] start the heading on a new page
  * @returns {string} XML
  */
-const headingPPr = ({ before, after, level, pageBreak = false }) =>
+const headingPPr = ({ before, after, line, level, pageBreak = false }) =>
   '<w:pPr>' +
   '<w:keepNext/><w:keepLines/>' +
   (pageBreak ? '<w:pageBreakBefore/>' : '') +
   '<w:widowControl/>' +
   '<w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs>' +
-  `<w:spacing w:before="${before}" w:after="${after}" w:line="${LINE.tight}" w:lineRule="auto"/>` +
+  spacing({ before, after, line }) +
   '<w:ind w:firstLine="0"/>' +
+  jc('both') +
   `<w:outlineLvl w:val="${level}"/>` +
   '</w:pPr>';
 
@@ -386,6 +597,83 @@ const LIST_MARKERS = {
 };
 
 // ---------------------------------------------------------------------------
+// Table of contents
+// ---------------------------------------------------------------------------
+
+/**
+ * The `toc 1` / `toc 2` / `toc 3` paragraph styles the Contents entries use.
+ *
+ * WHY THIS LIVES HERE AND IS APPLIED BY docx-postprocess.js, NOT BY THE
+ * REFERENCE DOC
+ * ---------------------------------------------------------------------------
+ * Neither pandoc's baseline reference.docx nor either of ours defines these
+ * (grep `w:styleId="TOC` in each templates/docx/src-VARIANT/word/styles.xml:
+ * only TOCHeading). They are deliberately NOT in STYLES below, because `create`
+ * branch of build-reference-docx.js stamps every style it invents with
+ * `w:customStyle="1"`, and these three are *built-in* Word styles. A built-in
+ * name carrying customStyle="1" is the one shape Word can decide to duplicate
+ * rather than adopt when a reader presses F9 on the field. docx-postprocess.js
+ * injects them into the built .docx instead, as proper built-ins.
+ *
+ * THEY ARE LOAD-BEARING FOR THE PAGE NUMBERS, NOT JUST FOR LOOKS. The entry
+ * paragraphs' indents and spacing set how many lines the Contents occupies,
+ * which sets where the body starts, which sets every page number in the
+ * Contents. Measured: with no TOC styles at all Word falls back to its gallery
+ * defaults (after=100, ind 220/440), the Contents runs two pages longer and
+ * Foreword lands on p9 instead of p7. Change these values and the page numbers
+ * move; that is expected and is why they are recomputed on every build.
+ *
+ * `basedOn BodyText` inherits the book's face and 1.2 line, so `firstLine=0` is
+ * mandatory — BodyText carries a 340tw first-line indent (PARINDENT) and
+ * without the reset every entry's first (only) line would be indented by it.
+ *
+ * `numberTab` is where the heading's section number ("1", "1.3", "1.3.1") ends
+ * and the title begins. These are the values Word itself picks for this
+ * document (measured off a Word-regenerated TOC: 480 at level 1, 1200 at level
+ * 3), expressed as the rule that produces them.
+ */
+const TOC = {
+  /** Right tab stop the dot leader runs to, twips. Word's own choice here. */
+  leaderTabPos: 9062,
+
+  /**
+   * One entry per outline level, index 0 = `toc 1`.
+   *
+   * Level 1 is bold and carries 6pt above it so a chapter line separates the
+   * block of sections before it from the block after; `before` and `after` add
+   * rather than collapse in Word, so that is 6pt on top of the previous entry's
+   * 3pt. Levels 2 and 3 step in by 12pt each.
+   */
+  levels: [
+    { indent: 0, before: 120, after: 60, bold: true },
+    { indent: 240, before: 0, after: 60, bold: false },
+    { indent: 480, before: 0, after: 60, bold: false },
+  ],
+
+  /**
+   * Left tab stop separating a section number from its title, twips, relative
+   * to the level's own indent. Level 1 numbers are one digit ("9"); levels 2
+   * and 3 are "9.9" and "9.9.9" and need the wider stop.
+   */
+  numberTab: (level) => (level === 1 ? 480 : 720),
+
+  /**
+   * The field instruction. Must stay in step with what pandoc's `--toc` writes,
+   * because docx-postprocess.js reuses whatever it finds and only falls back to
+   * this. `\o "1-3"` = outline levels 1-3, `\h` = hyperlinked entries, `\z` =
+   * hide page numbers in web layout, `\u` = use applied paragraph outline level.
+   */
+  instruction: 'TOC \\o "1-3" \\h \\z \\u',
+
+  /**
+   * `\n` suppresses page numbers entirely. This is the no-Word fallback: a
+   * complete, clickable Contents with no numbers, rather than a Contents whose
+   * dot leaders run to a blank. See docx-postprocess.js buildTocField().
+   */
+  instructionNoPages: 'TOC \\o "1-3" \\h \\z \\u \\n',
+};
+
+// ---------------------------------------------------------------------------
 // theme1.xml
 // ---------------------------------------------------------------------------
 
@@ -398,6 +686,11 @@ const LIST_MARKERS = {
  * through `minorHAnsi`, i.e. through the theme. No edit to styles.xml can style
  * a style that does not exist yet, so without this patch the entire table of
  * contents renders in Aptos.
+ *
+ * docx-postprocess.js now defines TOC1-3 explicitly (see TOC above), so the
+ * entries no longer *depend* on the theme. This stays anyway: it is still the
+ * only thing standing behind any style Word materialises from its gallery, and
+ * a reader who rebuilds the field with F9 gets the book's face either way.
  */
 const THEME = {
   majorLatin: FONTS.sans,
@@ -416,9 +709,17 @@ const DOC_DEFAULTS = {
   rPr:
     `${rFonts(FONTS.sans)}${sz(SIZE.body)}` +
     '<w:lang w:val="en-US" w:eastAsia="zh-CN" w:bidi="ar-SA"/>',
+  /**
+   * NO w:jc HERE, deliberately. Justification is set on BodyText and inherited
+   * by the prose styles that should have it. Putting it in docDefaults would
+   * hand it to every style in the document at once — including the ones the
+   * measurements say must stay ragged (SourceCode, Compact's table cells) and
+   * the ones where it is meaningless but risky (Header/Footer, TOC entries with
+   * dot leaders). Defaults are the wrong altitude for a decision this selective.
+   */
   pPr:
     '<w:widowControl/>' +
-    `<w:spacing w:after="0" w:line="${LINE.body}" w:lineRule="auto"/>`,
+    spacing({ after: 0, line: LINE.body }),
 };
 
 // ---------------------------------------------------------------------------
@@ -449,7 +750,7 @@ const STYLES = {
     body:
       '<w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="BodyText"/>' +
       '<w:link w:val="Heading1Char"/><w:uiPriority w:val="9"/><w:qFormat/>' +
-      headingPPr({ before: 0, after: 400, level: 0, pageBreak: true }) +
+      headingPPr({ before: 0, after: 400, line: LINE.h1, level: 0, pageBreak: true }) +
       `<w:rPr>${TITLING_RPR.Heading1}</w:rPr>`,
   },
 
@@ -458,7 +759,7 @@ const STYLES = {
     body:
       '<w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="BodyText"/>' +
       '<w:link w:val="Heading2Char"/><w:uiPriority w:val="9"/><w:qFormat/>' +
-      headingPPr({ before: 360, after: 120, level: 1 }) +
+      headingPPr({ before: 360, after: 120, line: LINE.h2, level: 1 }) +
       `<w:rPr>${TITLING_RPR.Heading2}</w:rPr>`,
   },
 
@@ -467,7 +768,7 @@ const STYLES = {
     body:
       '<w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="BodyText"/>' +
       '<w:link w:val="Heading3Char"/><w:uiPriority w:val="9"/><w:qFormat/>' +
-      headingPPr({ before: 280, after: 100, level: 2 }) +
+      headingPPr({ before: 280, after: 100, line: LINE.h3, level: 2 }) +
       `<w:rPr>${TITLING_RPR.Heading3}</w:rPr>`,
   },
 
@@ -504,8 +805,16 @@ const STYLES = {
       '<w:name w:val="Body Text"/><w:basedOn w:val="Normal"/>' +
       '<w:link w:val="BodyTextChar"/><w:qFormat/>' +
       '<w:pPr><w:widowControl/>' +
-      `<w:spacing w:before="0" w:after="0" w:line="${LINE.body}" w:lineRule="auto"/>` +
-      `<w:ind w:firstLine="${PARINDENT}"/></w:pPr>`,
+      spacing({ before: 0, after: 0, line: LINE.body }) +
+      `<w:ind w:firstLine="${PARINDENT}"/>` +
+      // Reaches further than "body prose". BodyText is also the paragraph
+      // style pandoc puts inside the callout tables (measured: 300 BodyText
+      // paragraphs across the 186 single-column tables), and the LaTeX
+      // callouts are justified too — their text is flush to the box's own
+      // right edge at 510.0pt, IQR 1.62pt. So one w:jc here is correct for
+      // both, and BlockText / FirstParagraph / Bibliography inherit it.
+      jc('both') +
+      '</w:pPr>',
   },
 
   // pandoc applies FirstParagraph to the paragraph directly after a heading,
@@ -518,14 +827,53 @@ const STYLES = {
       '<w:pPr><w:ind w:firstLine="0"/></w:pPr>',
   },
 
-  // Compact is used for list items and table cells. It MUST zero the inherited
-  // first-line indent or every bullet gets an extra 17pt of hanging text.
+  /**
+   * Compact is used for list items and table cells. It MUST zero the inherited
+   * first-line indent or every bullet gets an extra 17pt of hanging text.
+   *
+   * LEADING: promoted from LINE.tight to full body leading. LaTeX's `itemize`
+   * does not touch \baselineskip — only \itemsep and \parsep — so list items
+   * are set on the same 16.30pt body leading as everything else. Measured in
+   * the print PDF at the left-edge offsets lists actually occupy: +17.0pt
+   * (level 1), +27.3pt (level 2) and +24.4pt all read a modal 16.26pt, the
+   * same as body prose. The old 240/auto was 12.73pt, tighter than body text
+   * in a book whose lists carry a lot of its argument.
+   *
+   * JUSTIFICATION: left, and this is the ONE place the docx knowingly departs
+   * from the LaTeX PDF. pandoc gives list items and table cells the SAME style
+   * name, and OOXML paragraph styles have no "when inside a table" selector,
+   * so one w:jc has to serve both. They want opposite things:
+   *
+   *   list items   LaTeX justifies them (right-edge histogram spikes at 0pt,
+   *                45 of 197 measured lines flush to the margin) -> wants both
+   *   table cells  LaTeX raggeds them — pandoc's own LaTeX writer emits
+   *                >{\raggedright\arraybackslash}p{...} for wrapped columns,
+   *                and the render confirms it: the two 3-column tables on
+   *                pp138-139 have cell right edges scattered over ~100pt
+   *                                                            -> wants left
+   *
+   * Left wins because the two failure modes are not symmetric. A ragged list
+   * item is ordinary book typography that nobody will look at twice. A
+   * justified table cell in a ~190pt column is ~30 characters wide, which is
+   * far too narrow to absorb justification: the word spaces blow open and the
+   * cell fills with rivers. Counted in the built document.xml, 265 Compact
+   * paragraphs are list items and 51 are cells in those two tables — so this
+   * trades a small, invisible loss on the many for avoiding a large, glaring
+   * one on the few, and it is the choice pandoc's LaTeX writer already made.
+   *
+   * To revisit: the fix is not here but upstream — have the post-process give
+   * table-cell paragraphs their own style (or direct w:jc), then set both to
+   * `both` here. That file is outside this change's remit.
+   */
   Compact: {
     replace: true,
     body:
       '<w:name w:val="Compact"/><w:basedOn w:val="BodyText"/><w:qFormat/>' +
-      `<w:pPr><w:spacing w:before="36" w:after="36" w:line="${LINE.tight}" w:lineRule="auto"/>` +
-      '<w:ind w:firstLine="0"/></w:pPr>',
+      '<w:pPr>' +
+      spacing({ before: 36, after: 36, line: LINE.body }) +
+      '<w:ind w:firstLine="0"/>' +
+      jc('left') +
+      '</w:pPr>',
   },
 
   BlockText: {
@@ -555,14 +903,37 @@ const STYLES = {
       '<w:name w:val="Footnote Text"/><w:basedOn w:val="Normal"/>' +
       '<w:next w:val="FootnoteText"/><w:uiPriority w:val="9"/><w:qFormat/>' +
       '<w:pPr><w:widowControl/>' +
-      `<w:spacing w:before="0" w:after="40" w:line="${LINE.tight}" w:lineRule="auto"/>` +
+      // 11.20pt. basedOn Normal, so without an explicit line this would inherit
+      // docDefaults' 16.30pt body leading — half again too loose for 9pt notes.
+      // Measured off the print PDF's footnote block (9pt glyphs, y>620): 11.16pt,
+      // i.e. \footnotesize's 11pt \baselineskip. The book's footnotes are 26
+      // lines of mostly single-line URLs, so this is a small effect either way.
+      spacing({ before: 0, after: 40, line: LINE.footnote }) +
       '<w:ind w:firstLine="0"/></w:pPr>' +
       `<w:rPr>${sz(SIZE.footnote)}</w:rPr>`,
   },
 
+  /**
+   * Caption is basedOn Normal, so it too would otherwise inherit the 16.30pt
+   * body leading. Measured: figure captions run at 13.55pt (51 of the book's 58
+   * captions wrap, so this is well sampled) — the book class's natural 11pt
+   * \baselineskip, WITHOUT the 1.2 stretch, which is what setspace does to
+   * \caption.
+   *
+   * The centring is left alone deliberately. pandoc's baseline Caption carries
+   * no w:jc at all, so the `center` here is this project's own decision, not an
+   * inherited default. Worth recording that it does NOT match the PDF: LaTeX
+   * sets a caption that wraps as an ordinary justified paragraph (IQR 1.97pt,
+   * 94.1% of full-measure caption lines flush to the margin) and only centres
+   * the ones short enough to fit on a single line — behaviour w:jc cannot
+   * express, since Word has no "centre if it fits, else justify". Changing this
+   * is a live design choice, not a defect fix, so it stays as the project set it.
+   */
   Caption: {
     patchPPr:
-      '<w:spacing w:before="0" w:after="120"/><w:ind w:firstLine="0"/><w:jc w:val="center"/>',
+      spacing({ before: 0, after: 120, line: LINE.caption }) +
+      '<w:ind w:firstLine="0"/>' +
+      jc('center'),
     patchRPr: `<w:i/><w:iCs/>${sz(SIZE.caption)}`,
   },
   ImageCaption: {
@@ -616,8 +987,20 @@ const STYLES = {
       '</w:pBdr>' +
       `<w:shd w:val="clear" w:color="auto" w:fill="${COLOR.codeBg}"/>` +
       '<w:wordWrap w:val="off"/>' +
-      `<w:spacing w:before="120" w:after="120" w:line="${LINE.tight}" w:lineRule="auto"/>` +
+      // 14.35pt, measured off the code blocks in the print PDF (left-edge
+      // offset +9.7pt; the 28.44/28.69pt deltas in that bucket are blank lines,
+      // i.e. exactly 2x). Code must NOT take the 16.30pt body leading: it is
+      // 9pt type, and body leading on it would open the blocks up by 14% and
+      // break the visual density that makes a listing read as a listing.
+      // Equally it must not be left on the old 240/auto (10.41pt), which is
+      // tighter than LaTeX. This is the one style with its own measured value.
+      spacing({ before: 120, after: 120, line: LINE.code }) +
       '<w:ind w:left="240" w:right="240" w:firstLine="0"/>' +
+      // Explicit, not merely inherited. SourceCode is basedOn Normal so it does
+      // not pick up BodyText's w:jc today — but a future docDefaults change
+      // could hand it one, and justified code means shifted columns and broken
+      // ASCII alignment. Measured in the PDF at 22.67pt IQR: LaTeX ragges it.
+      jc('left') +
       '</w:pPr>' +
       // Mirrored onto the paragraph mark so blank lines in a block keep height.
       `<w:rPr>${rFonts(FONTS.mono)}${sz(SIZE.code)}</w:rPr>`,
@@ -638,12 +1021,20 @@ const STYLES = {
   // ---- header/footer -----------------------------------------------------
   // Both are ABSENT from pandoc's reference.docx and must be created, or the
   // header/footer parts below would reference undefined styles.
+  //
+  // These two keep LINE.tight / w:lineRule="auto" — the only styles that do,
+  // and the only ones where a ratio is still the right expression. A running
+  // head is one 9pt line inside a 0.5in header band; there is no body text to
+  // stay in register with, and 16.30pt of leading would just push the line
+  // toward the 0.4pt head rule. Alignment is set per-cell by the header table,
+  // not here, so no w:jc either.
   Header: {
     create: true,
     type: 'paragraph',
     body:
       '<w:name w:val="header"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="99"/>' +
-      `<w:pPr><w:spacing w:before="0" w:after="0" w:line="${LINE.tight}" w:lineRule="auto"/>` +
+      '<w:pPr>' +
+      spacing({ before: 0, after: 0, line: LINE.tight, rule: 'auto' }) +
       '<w:ind w:firstLine="0"/></w:pPr>' +
       `<w:rPr>${sz(SIZE.headerFooter)}</w:rPr>`,
   },
@@ -652,7 +1043,8 @@ const STYLES = {
     type: 'paragraph',
     body:
       '<w:name w:val="footer"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="99"/>' +
-      `<w:pPr><w:spacing w:before="0" w:after="0" w:line="${LINE.tight}" w:lineRule="auto"/>` +
+      '<w:pPr>' +
+      spacing({ before: 0, after: 0, line: LINE.tight, rule: 'auto' }) +
       '<w:ind w:firstLine="0"/></w:pPr>' +
       `<w:rPr>${sz(SIZE.headerFooter)}</w:rPr>`,
   },
@@ -765,6 +1157,8 @@ const shared = {
   docDefaults: DOC_DEFAULTS,
   styles: STYLES,
   listMarkers: LIST_MARKERS,
+  toc: TOC,
+  hyphenation: HYPHENATION,
 
   // ---- page geometry and section behaviour --------------------------------
   // All of this used to be per-variant. It is shared now because both LaTeX
@@ -793,26 +1187,79 @@ const shared = {
     { xml: '<w:embedTrueTypeFonts/>', before: 'w:embedSystemFonts' },
     // false => ship complete faces, not subsets, so the doc stays editable.
     { xml: '<w:saveSubsetFonts w:val="false"/>', after: 'w:embedSystemFonts' },
+
     /*
-     * The standards-correct request to refresh fields (TOC page numbers) on
-     * open. Kept because it is the documented signal and costs nothing, but do
-     * NOT rely on it: measured against Word 16.112 and LibreOffice 26.8, it is
-     * inert in both.
+     * ---- hyphenation ----------------------------------------------------
+     * CT_Settings is an ordered sequence and Word silently DROPS a child that
+     * arrives out of order — no error, no warning, the setting simply does not
+     * exist. The schema order through this region is:
      *
-     *   Word  - prompts "This document contains fields that may refer to other
-     *           files. Update?" whether or not this flag is present (the prompt
-     *           is driven by the presence of TOC/STYLEREF/PAGE fields plus the
-     *           user's "update automatic links at open" preference). Clicking
-     *           No leaves the TOC empty even WITH this flag set; clicking Yes
-     *           populates it even without.
-     *   LO     - headless conversion ignores it entirely; the TOC stays empty.
+     *   ... defaultTabStop
+     *       autoHyphenation
+     *       consecutiveHyphenLimit
+     *       hyphenationZone
+     *       doNotHyphenateCaps
+     *       ... showEnvelope, summaryLength, clickAndTypeStyle,
+     *           defaultTableStyle ...
+     *       evenAndOddHeaders
+     *       ... bookFold* ...
+     *       drawingGridHorizontalSpacing ...
      *
-     * pandoc emits the TOC field with no cached result, so an un-refreshed TOC
-     * renders as just the "Table of Contents" heading. Producing a populated
-     * TOC without user interaction needs the field result to be written into
-     * document.xml, which is a Lua-filter/post-process job, not a settings flag.
+     * so each of the four anchors off the one before it, and the first anchors
+     * off defaultTabStop (present in pandoc's baseline). Chaining rather than
+     * anchoring all four to defaultTabStop is what keeps them in order: these
+     * rules are applied in array order and each inserts IMMEDIATELY after its
+     * anchor, so four rules sharing one anchor would come out reversed.
+     *
+     * This is the same class of bug as the known-latent one in
+     * scripts/lib/font-embed.js injectSettingsFlags, which places
+     * embedTrueTypeFonts AFTER embedSystemFonts when the schema wants it
+     * before. That function is unused; it is not adopted here and its mistake
+     * is not repeated.
      */
-    { xml: '<w:updateFields w:val="true"/>', after: 'w:savePreviewPicture' },
+    { xml: '<w:autoHyphenation w:val="true"/>', after: 'w:defaultTabStop' },
+    {
+      xml: `<w:consecutiveHyphenLimit w:val="${HYPHENATION.consecutiveLimit}"/>`,
+      after: 'w:autoHyphenation',
+    },
+    {
+      xml: `<w:hyphenationZone w:val="${HYPHENATION.zone}"/>`,
+      after: 'w:consecutiveHyphenLimit',
+    },
+    ...(HYPHENATION.doNotHyphenateCaps
+      ? [
+          {
+            xml: '<w:doNotHyphenateCaps w:val="true"/>',
+            after: 'w:hyphenationZone',
+          },
+        ]
+      : []),
+    /*
+     * `<w:updateFields w:val="true"/>` USED TO BE HERE. IT IS DELIBERATELY GONE.
+     *
+     * It was the standards-correct request to refresh fields (TOC page numbers)
+     * on open, kept on the theory that it was the documented signal and cost
+     * nothing. Both halves of that turned out to be false, measured against Word
+     * 16.112 and LibreOffice 26.8:
+     *
+     *   - It never worked. Whether the TOC populates is driven by the presence
+     *     of TOC/STYLEREF/PAGE fields plus the user's "update automatic links at
+     *     open" preference, not by this flag. Clicking No left the TOC empty
+     *     WITH the flag set; clicking Yes populated it WITHOUT it. LibreOffice's
+     *     headless conversion ignores it outright.
+     *   - It is not free. On a document that already carries a correct cached
+     *     TOC — which every build now produces, see docx-postprocess.js — the
+     *     flag asks Word to throw that cache away and recompute, which means the
+     *     "update links" modal. A/B on the same open-and-count operation: the
+     *     old file with the preference ON blocked on the modal and died after
+     *     71.3s; the new file with the preference ON opened in 1.65s.
+     *
+     * So the flag now costs a dialog and buys nothing. Removing it, clearing
+     * `w:dirty` off the field, and shipping a real cached result are one change,
+     * and all three are applied by docx-postprocess.js (which also strips this
+     * element from the reference doc's settings.xml, so a stale reference-docx
+     * binary cannot reintroduce it).
+     */
   ],
 };
 
@@ -978,7 +1425,14 @@ function resolve(name) {
           { xml: '<w:mirrorMargins/>', after: 'w:saveSubsetFonts' }
         : null,
       merged.evenAndOddHeaders
-        ? { xml: '<w:evenAndOddHeaders/>', after: 'w:defaultTabStop' }
+        ? // Anchored BEFORE drawingGridHorizontalSpacing, not after
+          // defaultTabStop as it used to be. The hyphenation block now sits
+          // between those two, and "after defaultTabStop" would have inserted
+          // this ahead of it — putting evenAndOddHeaders before
+          // autoHyphenation, which is backwards in CT_Settings and would have
+          // cost the hyphenation silently. drawingGridHorizontalSpacing is in
+          // pandoc's baseline and is the next element after this one that is.
+          { xml: '<w:evenAndOddHeaders/>', before: 'w:drawingGridHorizontalSpacing' }
         : null,
     ].filter(Boolean),
   };
@@ -1004,11 +1458,15 @@ module.exports = {
   LINE,
   PARINDENT,
   COLOR,
+  HYPHENATION,
   LIST_MARKERS,
+  TOC,
   THEME,
   DOC_DEFAULTS,
   STYLES,
   rFonts,
   sz,
   color,
+  spacing,
+  jc,
 };
