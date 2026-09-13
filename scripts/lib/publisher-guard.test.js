@@ -221,7 +221,16 @@ t('a stripped BOM and CRLF are line-endings warnings, not errors', () => {
 t('a large rewrite is a change-volume warning', () => {
   const before = Array.from({ length: 10 }, (_, i) => `Paragraph ${i}.`).join('\n\n');
   const after = Array.from({ length: 10 }, (_, i) => `Rewritten ${i}.`).join('\n\n');
-  assert.ok(rules(compare(before, after)).includes('change-volume'));
+  assert.deepStrictEqual(rules(compare(before, after)), ['change-volume']);
+});
+
+t('blank lines do not dilute change-volume below the threshold', () => {
+  // 10 paragraphs separated by blank lines, half rewritten. Counting blank lines in
+  // the denominator (the old, buggy behaviour) gives 5/19 = 0.26 -- under threshold,
+  // so the warning would not have fired. Excluding blanks gives 5/10 = 0.5.
+  const before = Array.from({ length: 10 }, (_, i) => `Paragraph ${i}.`).join('\n\n');
+  const after = Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? `Rewritten ${i}.` : `Paragraph ${i}.`)).join('\n\n');
+  assert.deepStrictEqual(rules(compare(before, after)), ['change-volume']);
 });
 
 console.log('\n=== file set ===');

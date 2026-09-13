@@ -221,9 +221,15 @@ function sequenceDiff(before, after) {
   return null;
 }
 
+/**
+ * Blank lines are excluded from both the numerator and the denominator: across the
+ * 13 real sources, 37% of lines are blank, and blank lines never change (they're
+ * never "returned" differently), so counting them in the denominator dilutes the
+ * fraction and can mask a substantial prose rewrite.
+ */
 function changedLineFraction(before, after) {
-  const a = before.split('\n');
-  const b = after.split('\n');
+  const a = before.split('\n').filter((line) => line.trim() !== '');
+  const b = after.split('\n').filter((line) => line.trim() !== '');
   const common = new Set(a);
   let changed = 0;
   for (const line of b) if (!common.has(line)) changed++;
@@ -256,9 +262,6 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
     add('fence-integrity',
       `::: fence #${fenceDiff.index + 1} changed`,
       `was: ${fenceDiff.before === undefined ? '(absent)' : fenceDiff.before}\nnow: ${fenceDiff.after === undefined ? '(absent)' : fenceDiff.after}`);
-  } else if (before.divFences.length !== after.divFences.length) {
-    add('fence-integrity',
-      `::: fence count changed ${before.divFences.length} → ${after.divFences.length}`);
   }
   if (after.divFences.length % 2 !== 0) {
     add('fence-integrity', `::: fences do not balance (${after.divFences.length} fence lines)`);
