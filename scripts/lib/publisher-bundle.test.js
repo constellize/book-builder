@@ -131,5 +131,22 @@ t('skips indented paragraphs', () => {
   assert.strictEqual(B.dewrapParagraphs(before, after).dewrapped, 0);
 });
 
+t('restores original line breaks for a single-line paragraph hard-wrapped across three lines', () => {
+  const before = 'Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu.\n';
+  const after = 'Alpha bravo charlie delta echo foxtrot golf hotel india juliet\nkilo lima mike november oscar papa quebec romeo sierra tango\nuniform victor whiskey xray yankee zulu.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, before);
+  assert.strictEqual(out.dewrapped, 1);
+});
+
+t('preserves a hard-wrapped paragraph that was also edited, rather than reverting it', () => {
+  const before = 'Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu.\n';
+  const after = 'Alpha bravo charlie delta echo foxtrot golf hotel india juliet\nkilo lima MIKE-EDITED november oscar papa quebec romeo sierra tango\nuniform victor whiskey xray yankee zulu.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.ok(out.text.includes('MIKE-EDITED'), 'the edit must survive');
+  assert.notStrictEqual(out.text, before, 'an edited paragraph must not be reverted to the snapshot');
+  assert.strictEqual(out.dewrapped, 0);
+});
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
