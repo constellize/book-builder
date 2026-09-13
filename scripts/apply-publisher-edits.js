@@ -54,6 +54,23 @@ function loadReferenceKeys(contentDir) {
   }
 }
 
+const OWN_WORKSPACE_RE = /^.. publisher\//;
+
+/**
+ * Exclude this tool's own scratch workspace from a `git status --porcelain` dirty
+ * check. Both this script and package-for-publisher.js write into
+ * <contentDir>/publisher/, which is untracked and not (yet) gitignored -- without this,
+ * the normal package -> send -> apply sequence dirty-blocks itself on its own output. A
+ * later task adds publisher/ to the book repo's .gitignore; this filter is
+ * belt-and-braces, not the only defence, so everything else in the repo still counts.
+ */
+function filterOwnWorkspace(porcelain) {
+  return porcelain
+    .split('\n')
+    .filter((line) => line && !OWN_WORKSPACE_RE.test(line))
+    .join('\n');
+}
+
 function main() {
   program
     .name('apply-publisher-edits')
@@ -67,6 +84,7 @@ function main() {
     .parse();
 
   const opts = program.opts();
+  const dryRun = !!opts.dryRun;
   const contentDir = path.resolve(opts.contentDir);
   const bundleArg = path.resolve(program.args[0]);
 
@@ -79,10 +97,19 @@ function main() {
     throw new Error(`${contentDir} is not inside a git repository`);
   }
 
+  // Captured here, before any git mutation, and reused everywhere below. A detached
+  // HEAD must be rejected before we ever branch or commit: `git checkout -q HEAD` is a
+  // no-op that leaves the process on the edit branch, and a subsequent "already up to
+  // date" merge would report success while merging nothing.
+  const originalBranch = git(contentDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (originalBranch === 'HEAD') {
+    throw new Error('HEAD is detached. Check out the branch you want the publisher edits merged into, then re-run.');
+  }
+
   // Branch switching needs a clean tree. Submodule pointer changes are excluded:
   // book-builder is a submodule and is routinely modified alongside this work.
-  const dirty = git(contentDir, ['status', '--porcelain', '--ignore-submodules=all']);
-  if (dirty && !opts.dryRun) {
+  const dirty = filterOwnWorkspace(git(contentDir, ['status', '--porcelain', '--ignore-submodules=all']));
+  if (dirty && !dryRun) {
     throw new Error('Working tree has uncommitted changes:\n' + dirty + '\n\nCommit or stash them first.');
   }
 
@@ -128,9 +155,20 @@ function main() {
       }
     }
 
+    // A dry run promises to touch nothing in the book repo: it must not delete a
+    // previous round's real reports, nor write its own preview output where a real
+    // apply's artifacts live. Preview output goes under the scratch dir instead (and is
+    // discarded with it on exit); only a run that actually proceeds -- a clean merge or
+    // a guard-blocked stop, both of which need a fresh, real report on disk -- clears
+    // and repopulates the durable workspace.
     const workspace = path.join(contentDir, 'publisher', label, 'incoming');
-    fs.removeSync(workspace);
-    fs.ensureDirSync(workspace);
+    const outDir = dryRun ? path.join(scratch, 'preview') : workspace;
+    if (dryRun) {
+      fs.ensureDirSync(outDir);
+    } else {
+      fs.removeSync(workspace);
+      fs.ensureDirSync(workspace);
+    }
 
     // --- Normalize -----------------------------------------------------------
     console.log(chalk.blue(`Applying ${label} (anchor ${tag})`));
@@ -173,7 +211,7 @@ function main() {
         if (out.dewrapped) console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
       }
       normalized[name] = finalText;
-      fs.writeFileSync(path.join(workspace, name), finalText, 'utf8');
+      fs.writeFileSync(path.join(outDir, name), finalText, 'utf8');
       findings.push(...G.compareFiles({
         name, snapshotText: snapshot[name], returnedText: finalText, notes, refKeys,
       }));
@@ -181,22 +219,22 @@ function main() {
 
     for (const meta of ['QUERIES.md', 'README.md']) {
       const source = path.join(bundleRoot, meta);
-      if (fs.existsSync(source)) fs.copySync(source, path.join(workspace, meta));
+      if (fs.existsSync(source)) fs.copySync(source, path.join(outDir, meta));
     }
 
-    const reportPath = path.join(workspace, 'guard-report.md');
+    const reportPath = path.join(outDir, 'guard-report.md');
     fs.writeFileSync(reportPath, G.renderReport(findings), 'utf8');
 
     const errors = findings.filter((x) => x.severity === 'error');
     const warnings = findings.filter((x) => x.severity === 'warning');
     console.log(chalk.gray(`  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
 
-    const queriesPath = path.join(workspace, 'QUERIES.md');
+    const queriesPath = path.join(outDir, 'QUERIES.md');
     if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
       console.log(chalk.yellow(`  The publisher left queries: ${queriesPath}`));
     }
 
-    if (opts.dryRun) {
+    if (dryRun) {
       console.log(chalk.blue('\nDry run: git was not touched.'));
       console.log(G.renderReport(findings));
       return errors.length ? EXIT.BLOCKED : EXIT.OK;
@@ -209,7 +247,6 @@ function main() {
     }
 
     // --- Merge ---------------------------------------------------------------
-    const originalBranch = git(contentDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
     const editBranch = `${tag}-edits`;
 
     // A previous apply for this round may have left the branch behind. Reusing it would
@@ -260,7 +297,23 @@ function main() {
       throw err;
     }
 
-    git(contentDir, ['checkout', '-q', originalBranch]);
+    // The commit above is real and must not be lost. Unlike the write/commit failure
+    // above, there is nothing to roll back to here -- editBranch already carries a
+    // genuine commit -- so on failure this reports exactly where things stand and how
+    // to finish by hand, rather than letting the top-level handler print a bare
+    // "Apply failed" while the repo silently sits on editBranch.
+    try {
+      git(contentDir, ['checkout', '-q', originalBranch]);
+    } catch (err) {
+      throw new Error(
+        `Publisher edits committed to ${editBranch}, but checking out ${originalBranch} to merge them failed: ${err.message}\n\n` +
+        `Nothing was lost: the repository is currently on ${editBranch} with that commit intact. Resolve the checkout ` +
+        'problem, then finish by hand:\n' +
+        `  git checkout ${originalBranch}\n` +
+        `  git merge --no-ff ${editBranch}`
+      );
+    }
+
     const merge = gitAllowFail(contentDir, ['merge', '--no-ff', '-m', `Merge publisher edits: ${label}`, editBranch]);
 
     // The merge outcome is decided above; nothing past this point may change it. A
@@ -280,7 +333,25 @@ function main() {
     }
 
     if (!merge.ok) {
-      const conflicted = git(contentDir, ['diff', '--name-only', '--diff-filter=U']);
+      // gitAllowFail's non-zero exit covers two very different situations. Only one of
+      // them is an actual merge-with-conflicts; telling them apart matters because the
+      // recovery instructions (and the exit code) are different for each.
+      const mergeInProgress = gitAllowFail(contentDir, ['rev-parse', '-q', '--verify', 'MERGE_HEAD']).ok;
+      if (!mergeInProgress) {
+        // git refused to even start the merge -- e.g. an untracked file in the way of
+        // one of the incoming paths. No merge is in progress, so nothing was merged:
+        // exit 1 is the true outcome, and git's own diagnostic is what explains why.
+        throw new Error(`git merge did not start:\n\n${merge.out}`);
+      }
+
+      // A failure to list conflicted files must not change the fact that a real merge
+      // conflict exists and exit 2 is the correct, already-decided outcome.
+      let conflicted = '(could not list conflicted files -- run `git status` by hand)';
+      try {
+        conflicted = git(contentDir, ['diff', '--name-only', '--diff-filter=U']);
+      } catch (err) {
+        console.log(chalk.yellow(`  Could not list conflicted files: ${err.message}`));
+      }
       console.log(chalk.yellow('\nMerge stopped on conflicts. This is expected when both sides edited the same paragraph.'));
       console.log(chalk.yellow('Conflicted files:\n' + conflicted));
       console.log(chalk.gray('\nResolve them, then:  git add <files> && git commit'));

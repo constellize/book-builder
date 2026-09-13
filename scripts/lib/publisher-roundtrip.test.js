@@ -150,18 +150,20 @@ t('deletes the edit branch and restores the original branch when a returned file
     fs.chmodSync(liveFile, 0o444);
 
     const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
-    let failed = false;
+    let status = null;
     try {
       execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
-      failed = true;
+      status = err.status;
     } finally {
       fs.chmodSync(liveFile, 0o644); // restore so cleanup below can remove the repo
     }
-    assert.ok(failed, 'expected apply-publisher-edits to exit non-zero when a returned file cannot be written');
+    // The contract hangs on the specific code, not just "non-zero": EXIT.BLOCKED (1)
+    // means a precondition or guard failure with nothing of value left behind.
+    assert.strictEqual(status, 1, 'expected apply-publisher-edits to exit 1 when a returned file cannot be written');
 
     const editBranches = run(['branch', '--list', `${tag}-edits`]).trim();
     assert.strictEqual(editBranches, '', 'expected no edit branch left behind after a failed apply');
@@ -171,6 +173,150 @@ t('deletes the edit branch and restores the original branch when a returned file
   } finally {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
     fs.rmSync(bundleDir, { recursive: true, force: true });
+  }
+});
+
+console.log('\n=== apply: detached HEAD ===');
+
+t('refuses to run on a detached HEAD and creates no edit branch', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-detached-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    for (const name of B.EXPECTED_FILES) {
+      fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n\nOriginal paragraph text for ${name}.\n`, 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+
+    const packageCli = path.join(__dirname, '..', 'package-for-publisher.js');
+    execFileSync(process.execPath, [packageCli, tmpRepo, '--round', 'detached-test'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // `git checkout <sha>` (rather than a branch name) detaches HEAD, exactly as
+    // `git checkout publisher/detached-test` would to look at an earlier round.
+    const sha = run(['rev-parse', 'HEAD']).trim();
+    run(['checkout', '-q', sha]);
+    assert.strictEqual(run(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'HEAD', 'test setup: expected HEAD to be detached');
+
+    const bundleDir = path.join(tmpRepo, 'publisher', 'detached-test', 'outgoing', 'constellize-book-detached-test');
+    const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+    let status = null;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      status = err.status;
+      stderr = String(err.stderr || '');
+    }
+    assert.strictEqual(status, 1, 'expected exit 1 when HEAD is detached');
+    assert.ok(/detached/i.test(stderr), `expected the error to name the detached HEAD, got: ${stderr}`);
+
+    const editBranches = run(['branch', '--list', 'publisher/*-edits']).trim();
+    assert.strictEqual(editBranches, '', 'expected no edit branch to be created when HEAD is detached');
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+});
+
+console.log('\n=== apply: does not self-block on its own workspace ===');
+
+t('does not treat its own untracked publisher/ workspace as a dirty tree', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-selfblock-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    for (const name of B.EXPECTED_FILES) {
+      fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n\nOriginal paragraph text for ${name}.\n`, 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+
+    const packageCli = path.join(__dirname, '..', 'package-for-publisher.js');
+    execFileSync(process.execPath, [packageCli, tmpRepo, '--round', 'selfblock-test'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Simulate the packager's own untracked scratch output sitting in the tree -- the
+    // exact shape that used to trip the dirty-tree check before this fix, whether it
+    // came from this round or an unrelated one.
+    fs.mkdirSync(path.join(tmpRepo, 'publisher', 'round-1', 'outgoing'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRepo, 'publisher', 'round-1', 'outgoing', 'x.txt'), 'noise\n', 'utf8');
+
+    const bundleDir = path.join(tmpRepo, 'publisher', 'selfblock-test', 'outgoing', 'constellize-book-selfblock-test');
+    const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+    let status = null;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      status = 0;
+    } catch (err) {
+      status = err.status;
+      stderr = String(err.stderr || '');
+    }
+    assert.strictEqual(status, 0, `expected a clean apply to succeed despite untracked publisher/ noise, got status ${status}: ${stderr}`);
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+});
+
+console.log('\n=== apply: scratch directory cleanup ===');
+
+t('removes its scratch unpack directory after a run', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-scratchcheck-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+
+  // Matches exactly what fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-'))
+  // produces: the literal prefix plus exactly 6 trailing characters, nothing more. This
+  // is deliberately narrower than a bare "starts with publisher-apply-" check, which
+  // would also match this very test file's own 'publisher-apply-scratchcheck-*' and
+  // 'publisher-apply-rollback-*' fixture directories above.
+  const SCRATCH_RE = /^publisher-apply-[A-Za-z0-9]{6}$/;
+  const countScratchDirs = () => fs.readdirSync(os.tmpdir()).filter((name) => SCRATCH_RE.test(name)).length;
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    for (const name of B.EXPECTED_FILES) {
+      fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n\nOriginal paragraph text for ${name}.\n`, 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+
+    const packageCli = path.join(__dirname, '..', 'package-for-publisher.js');
+    execFileSync(process.execPath, [packageCli, tmpRepo, '--round', 'scratch-check'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const before = countScratchDirs();
+
+    const bundleDir = path.join(tmpRepo, 'publisher', 'scratch-check', 'outgoing', 'constellize-book-scratch-check');
+    const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+    execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo, '--dry-run'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const after = countScratchDirs();
+    assert.strictEqual(after, before, 'expected no leftover publisher-apply-* scratch directory after a run');
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
   }
 });
 
