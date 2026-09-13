@@ -6,6 +6,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const P = require('../package-for-publisher.js');
 const B = require('./publisher-bundle.js');
@@ -315,6 +316,65 @@ t('removes its scratch unpack directory after a run', () => {
 
     const after = countScratchDirs();
     assert.strictEqual(after, before, 'expected no leftover publisher-apply-* scratch directory after a run');
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+});
+
+console.log('\n=== apply: re-running an already-applied round preserves change-report.md ===');
+
+t('does not destroy a prior change-report.md when a re-run is blocked by the branch-exists guard', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-rerun-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+  const sha256 = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    for (const name of B.EXPECTED_FILES) {
+      fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n\nOriginal paragraph text for ${name}.\n`, 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+
+    const packageCli = path.join(__dirname, '..', 'package-for-publisher.js');
+    execFileSync(process.execPath, [packageCli, tmpRepo, '--round', 'rerun-test'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const bundleDir = path.join(tmpRepo, 'publisher', 'rerun-test', 'outgoing', 'constellize-book-rerun-test');
+    fs.writeFileSync(path.join(bundleDir, 'ch2.md'),
+      fs.readFileSync(path.join(bundleDir, 'ch2.md'), 'utf8').replace('Original', 'Edited'), 'utf8');
+
+    const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+    execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const changeReportPath = path.join(tmpRepo, 'publisher', 'rerun-test', 'incoming', 'change-report.md');
+    assert.ok(fs.existsSync(changeReportPath), 'expected the first, successful apply to produce change-report.md');
+    const before = sha256(changeReportPath);
+
+    // editBranch survives a successful merge by design, so re-running the same round --
+    // even against the identical, already-merged bundle -- lands on the branch-exists
+    // guard. That is the ordinary shape of a re-run, not an exotic setup.
+    let status = null;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      status = err.status;
+      stderr = String(err.stderr || '');
+    }
+    assert.strictEqual(status, 1, `expected the re-run to fail at the branch-exists guard, got status ${status}: ${stderr}`);
+    assert.ok(/already exists/.test(stderr), `expected the branch-exists error, got: ${stderr}`);
+
+    assert.ok(fs.existsSync(changeReportPath), 'expected change-report.md to survive a re-run blocked by the branch-exists guard');
+    assert.strictEqual(sha256(changeReportPath), before, 'expected change-report.md to be byte-identical after the blocked re-run');
   } finally {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
   }

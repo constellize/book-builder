@@ -158,16 +158,26 @@ function main() {
     // A dry run promises to touch nothing in the book repo: it must not delete a
     // previous round's real reports, nor write its own preview output where a real
     // apply's artifacts live. Preview output goes under the scratch dir instead (and is
-    // discarded with it on exit); only a run that actually proceeds -- a clean merge or
-    // a guard-blocked stop, both of which need a fresh, real report on disk -- clears
-    // and repopulates the durable workspace.
+    // discarded with it on exit).
     const workspace = path.join(contentDir, 'publisher', label, 'incoming');
     const outDir = dryRun ? path.join(scratch, 'preview') : workspace;
-    if (dryRun) {
-      fs.ensureDirSync(outDir);
-    } else {
-      fs.removeSync(workspace);
-      fs.ensureDirSync(workspace);
+    fs.ensureDirSync(outDir);
+
+    // editBranch survives a successful merge by design (see the branch-exists guard
+    // below), so *every* re-run of an already-applied round reaches at least that
+    // guard -- this is the ordinary shape of a re-run, not an exotic case. A wholesale
+    // `removeSync(workspace)` here would destroy change-report.md, the full-diff audit
+    // record of a merge that already landed, before that guard ever gets a chance to
+    // fire. So: overwrite in place, and only pre-clear the specific things that would
+    // otherwise go stale -- the normalized chapter copies (so a file the current bundle
+    // no longer contains doesn't linger from a previous run) and the guard report
+    // (which must always describe THIS run). change-report.md, and the copied
+    // QUERIES.md/README.md, are left alone; the copy step below refreshes the latter two
+    // whenever the current bundle provides them, and change-report.md is exactly the
+    // record this fix protects.
+    if (!dryRun) {
+      for (const name of B.EXPECTED_FILES) fs.removeSync(path.join(outDir, name));
+      fs.removeSync(path.join(outDir, 'guard-report.md'));
     }
 
     // --- Normalize -----------------------------------------------------------
@@ -227,11 +237,19 @@ function main() {
 
     const errors = findings.filter((x) => x.severity === 'error');
     const warnings = findings.filter((x) => x.severity === 'warning');
-    console.log(chalk.gray(`  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
+    // On a dry run, reportPath points into the scratch dir, which the top-level finally
+    // deletes before the process exits -- printing that path would be a dead link. The
+    // full report is echoed to stdout below instead, so say that explicitly rather than
+    // pointing at a file that won't be there to open.
+    console.log(chalk.gray(dryRun
+      ? `  guard: ${errors.length} error(s), ${warnings.length} warning(s) (preview only -- shown below, not saved)`
+      : `  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
 
     const queriesPath = path.join(outDir, 'QUERIES.md');
     if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
-      console.log(chalk.yellow(`  The publisher left queries: ${queriesPath}`));
+      console.log(chalk.yellow(dryRun
+        ? '  The publisher left queries (preview only; re-run without --dry-run to save a copy).'
+        : `  The publisher left queries: ${queriesPath}`));
     }
 
     if (dryRun) {
