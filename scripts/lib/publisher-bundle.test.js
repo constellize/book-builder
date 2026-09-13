@@ -148,5 +148,53 @@ t('preserves a hard-wrapped paragraph that was also edited, rather than revertin
   assert.strictEqual(out.dewrapped, 0);
 });
 
+console.log('\n=== manifest ===');
+
+const MANIFEST_INPUT = {
+  label: 'round-1',
+  tag: 'publisher/round-1',
+  commit: 'a09b7231f0c4e5d6a7b8c9d0e1f2a3b4c5d6e7f8',
+  date: '2026-09-12',
+  files: [
+    { name: 'ch1.md', sha256: B.sha256('one\n') },
+    { name: 'ch2.md', sha256: B.sha256('two\n') },
+  ],
+};
+
+t('round-trips through render and parse', () => {
+  const parsed = B.parseManifest(B.renderManifest(MANIFEST_INPUT));
+  assert.strictEqual(parsed.label, 'round-1');
+  assert.strictEqual(parsed.tag, 'publisher/round-1');
+  assert.strictEqual(parsed.commit, MANIFEST_INPUT.commit);
+  assert.strictEqual(parsed.date, '2026-09-12');
+  assert.deepStrictEqual(parsed.files, MANIFEST_INPUT.files);
+});
+
+t('renders a human-readable header', () => {
+  const text = B.renderManifest(MANIFEST_INPUT);
+  assert.ok(text.includes('publisher/round-1'));
+  assert.ok(text.includes(MANIFEST_INPUT.commit));
+});
+
+t('throws on a manifest with no commit line', () => {
+  const broken = B.renderManifest(MANIFEST_INPUT).split('\n').filter((l) => !l.startsWith('Commit:')).join('\n');
+  assert.throws(() => B.parseManifest(broken), /commit/i);
+});
+
+t('verifies matching snapshot content', () => {
+  assert.deepStrictEqual(B.verifyManifest(MANIFEST_INPUT, { 'ch1.md': 'one\n', 'ch2.md': 'two\n' }), []);
+});
+
+t('reports a tampered hash', () => {
+  const problems = B.verifyManifest(MANIFEST_INPUT, { 'ch1.md': 'ONE\n', 'ch2.md': 'two\n' });
+  assert.strictEqual(problems.length, 1);
+  assert.ok(problems[0].includes('ch1.md'));
+});
+
+t('reports a file the manifest does not list', () => {
+  const problems = B.verifyManifest(MANIFEST_INPUT, { 'ch1.md': 'one\n' });
+  assert.ok(problems.some((p) => p.includes('ch2.md')));
+});
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
