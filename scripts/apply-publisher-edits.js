@@ -88,188 +88,222 @@ function main() {
 
   // Unpack into a scratch dir so the publisher's original download is never modified.
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-'));
-  let unpacked;
-  if (fs.statSync(bundleArg).isDirectory()) {
-    unpacked = path.join(scratch, 'bundle');
-    fs.copySync(bundleArg, unpacked);
-  } else {
-    unpacked = path.join(scratch, 'bundle');
-    fs.ensureDirSync(unpacked);
-    B.unzipTo(bundleArg, unpacked);
-  }
-  const bundleRoot = findBundleRoot(unpacked);
-
-  let manifest = null;
-  const manifestPath = path.join(bundleRoot, 'MANIFEST.TXT');
-  if (fs.existsSync(manifestPath)) {
-    try {
-      manifest = B.parseManifest(fs.readFileSync(manifestPath, 'utf8'));
-    } catch (err) {
-      console.log(chalk.yellow(`  MANIFEST.TXT is malformed: ${err.message}`));
-    }
-  }
-
-  const label = manifest ? manifest.label : opts.round;
-  if (!label) {
-    throw new Error('MANIFEST.TXT is missing or malformed. Re-run with --round <label> to name the round explicitly.');
-  }
-  const tag = `publisher/${label}`;
-
   try {
-    git(contentDir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]);
-  } catch (err) {
-    throw new Error(`Tag ${tag} does not exist in this repository. It is the merge anchor for this round and cannot be reconstructed.`);
-  }
-  if (manifest) {
-    const tagged = git(contentDir, ['rev-parse', `${tag}^{commit}`]);
-    if (tagged !== manifest.commit) {
-      throw new Error(`Tag ${tag} points at ${tagged} but MANIFEST.TXT records ${manifest.commit}. The tag has moved; refusing to merge against the wrong snapshot.`);
+    let unpacked;
+    if (fs.statSync(bundleArg).isDirectory()) {
+      unpacked = path.join(scratch, 'bundle');
+      fs.copySync(bundleArg, unpacked);
+    } else {
+      unpacked = path.join(scratch, 'bundle');
+      fs.ensureDirSync(unpacked);
+      B.unzipTo(bundleArg, unpacked);
     }
-  }
+    const bundleRoot = findBundleRoot(unpacked);
 
-  const workspace = path.join(contentDir, 'publisher', label, 'incoming');
-  fs.removeSync(workspace);
-  fs.ensureDirSync(workspace);
+    let manifest = null;
+    const manifestPath = path.join(bundleRoot, 'MANIFEST.TXT');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifest = B.parseManifest(fs.readFileSync(manifestPath, 'utf8'));
+      } catch (err) {
+        console.log(chalk.yellow(`  MANIFEST.TXT is malformed: ${err.message}`));
+      }
+    }
 
-  // --- Normalize -----------------------------------------------------------
-  console.log(chalk.blue(`Applying ${label} (anchor ${tag})`));
+    const label = manifest ? manifest.label : opts.round;
+    if (!label) {
+      throw new Error('MANIFEST.TXT is missing or malformed. Re-run with --round <label> to name the round explicitly.');
+    }
+    const tag = `publisher/${label}`;
 
-  const snapshot = {};
-  for (const name of B.EXPECTED_FILES) {
-    snapshot[name] = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
-  }
+    try {
+      git(contentDir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]);
+    } catch (err) {
+      throw new Error(`Tag ${tag} does not exist in this repository. It is the merge anchor for this round and cannot be reconstructed.`);
+    }
+    if (manifest) {
+      const tagged = git(contentDir, ['rev-parse', `${tag}^{commit}`]);
+      if (tagged !== manifest.commit) {
+        throw new Error(`Tag ${tag} points at ${tagged} but MANIFEST.TXT records ${manifest.commit}. The tag has moved; refusing to merge against the wrong snapshot.`);
+      }
+    }
 
-  // Prove the manifest describes THIS tag's content. The hashes were taken from the
-  // same `git show` output at pack time, so a mismatch means the manifest and the tag
-  // disagree about what was sent — merging against that snapshot would be merging
-  // against the wrong base. Returned files are expected to differ and are not checked
-  // here; this compares the manifest to the snapshot only.
-  if (manifest) {
-    const problems = B.verifyManifest(manifest, snapshot);
-    if (problems.length) {
+    const workspace = path.join(contentDir, 'publisher', label, 'incoming');
+    fs.removeSync(workspace);
+    fs.ensureDirSync(workspace);
+
+    // --- Normalize -----------------------------------------------------------
+    console.log(chalk.blue(`Applying ${label} (anchor ${tag})`));
+
+    const snapshot = {};
+    for (const name of B.EXPECTED_FILES) {
+      snapshot[name] = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
+    }
+
+    // Prove the manifest describes THIS tag's content. The hashes were taken from the
+    // same `git show` output at pack time, so a mismatch means the manifest and the tag
+    // disagree about what was sent — merging against that snapshot would be merging
+    // against the wrong base. Returned files are expected to differ and are not checked
+    // here; this compares the manifest to the snapshot only.
+    if (manifest) {
+      const problems = B.verifyManifest(manifest, snapshot);
+      if (problems.length) {
+        throw new Error(
+          'MANIFEST.TXT does not describe the content at ' + tag + ':\n  ' +
+          problems.join('\n  ') +
+          '\n\nRefusing to merge against a snapshot the manifest does not match.'
+        );
+      }
+    }
+
+    const present = fs.readdirSync(bundleRoot).filter((f) => f.endsWith('.md') || f === 'MANIFEST.TXT');
+    const findings = G.checkFileSet(B.EXPECTED_FILES, present.filter((f) => f !== 'MANIFEST.TXT'));
+
+    const refKeys = loadReferenceKeys(contentDir);
+    const normalized = {};
+
+    for (const name of B.EXPECTED_FILES) {
+      const source = path.join(bundleRoot, name);
+      if (!fs.existsSync(source)) continue; // already reported by checkFileSet
+      const { text, notes } = B.readAndNormalize(source);
+      let finalText = text;
+      if (!notes.invalidUtf8 && opts.dewrap !== false) {
+        const out = B.dewrapParagraphs(snapshot[name], text);
+        finalText = out.text;
+        if (out.dewrapped) console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
+      }
+      normalized[name] = finalText;
+      fs.writeFileSync(path.join(workspace, name), finalText, 'utf8');
+      findings.push(...G.compareFiles({
+        name, snapshotText: snapshot[name], returnedText: finalText, notes, refKeys,
+      }));
+    }
+
+    for (const meta of ['QUERIES.md', 'README.md']) {
+      const source = path.join(bundleRoot, meta);
+      if (fs.existsSync(source)) fs.copySync(source, path.join(workspace, meta));
+    }
+
+    const reportPath = path.join(workspace, 'guard-report.md');
+    fs.writeFileSync(reportPath, G.renderReport(findings), 'utf8');
+
+    const errors = findings.filter((x) => x.severity === 'error');
+    const warnings = findings.filter((x) => x.severity === 'warning');
+    console.log(chalk.gray(`  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
+
+    const queriesPath = path.join(workspace, 'QUERIES.md');
+    if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
+      console.log(chalk.yellow(`  The publisher left queries: ${queriesPath}`));
+    }
+
+    if (opts.dryRun) {
+      console.log(chalk.blue('\nDry run: git was not touched.'));
+      console.log(G.renderReport(findings));
+      return errors.length ? EXIT.BLOCKED : EXIT.OK;
+    }
+
+    if (errors.length && !opts.force) {
+      console.error(chalk.red(`\nBlocked: ${errors.length} structural error(s). Nothing has been merged.`));
+      console.error(chalk.gray(`Read ${reportPath}, then either fix the returned files or re-run with --force.`));
+      return EXIT.BLOCKED;
+    }
+
+    // --- Merge ---------------------------------------------------------------
+    const originalBranch = git(contentDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const editBranch = `${tag}-edits`;
+
+    // A previous apply for this round may have left the branch behind. Reusing it would
+    // root the publisher's commit on the last attempt instead of on the tag, which is a
+    // different and wrong merge base.
+    const branchExists = gitAllowFail(contentDir, ['rev-parse', '-q', '--verify', `refs/heads/${editBranch}`]).ok;
+    if (branchExists) {
       throw new Error(
-        'MANIFEST.TXT does not describe the content at ' + tag + ':\n  ' +
-        problems.join('\n  ') +
-        '\n\nRefusing to merge against a snapshot the manifest does not match.'
+        `Branch ${editBranch} already exists from an earlier apply of this round.\n` +
+        `Delete it with:  git branch -D ${editBranch}\n` +
+        'Check first that nothing on it is unmerged.'
       );
     }
-  }
 
-  const present = fs.readdirSync(bundleRoot).filter((f) => f.endsWith('.md') || f === 'MANIFEST.TXT');
-  const findings = G.checkFileSet(B.EXPECTED_FILES, present.filter((f) => f !== 'MANIFEST.TXT'));
+    git(contentDir, ['checkout', '-q', '-b', editBranch, tag]);
+    try {
+      for (const [name, text] of Object.entries(normalized)) {
+        fs.writeFileSync(path.join(contentDir, name), text, 'utf8');
+      }
+      git(contentDir, ['add', '--'].concat(Object.keys(normalized)));
 
-  const refKeys = loadReferenceKeys(contentDir);
-  const normalized = {};
+      const staged = git(contentDir, ['diff', '--cached', '--name-only']);
+      if (!staged) {
+        console.log(chalk.yellow('The returned files are identical to the snapshot. Nothing to merge.'));
+        git(contentDir, ['checkout', '-q', originalBranch]);
+        git(contentDir, ['branch', '-q', '-D', editBranch]);
+        return EXIT.OK;
+      }
 
-  for (const name of B.EXPECTED_FILES) {
-    const source = path.join(bundleRoot, name);
-    if (!fs.existsSync(source)) continue; // already reported by checkFileSet
-    const { text, notes } = B.readAndNormalize(source);
-    let finalText = text;
-    if (!notes.invalidUtf8 && opts.dewrap !== false) {
-      const out = B.dewrapParagraphs(snapshot[name], text);
-      finalText = out.text;
-      if (out.dewrapped) console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
-    }
-    normalized[name] = finalText;
-    fs.writeFileSync(path.join(workspace, name), finalText, 'utf8');
-    findings.push(...G.compareFiles({
-      name, snapshotText: snapshot[name], returnedText: finalText, notes, refKeys,
-    }));
-  }
-
-  for (const meta of ['QUERIES.md', 'README.md']) {
-    const source = path.join(bundleRoot, meta);
-    if (fs.existsSync(source)) fs.copySync(source, path.join(workspace, meta));
-  }
-
-  const reportPath = path.join(workspace, 'guard-report.md');
-  fs.writeFileSync(reportPath, G.renderReport(findings), 'utf8');
-
-  const errors = findings.filter((x) => x.severity === 'error');
-  const warnings = findings.filter((x) => x.severity === 'warning');
-  console.log(chalk.gray(`  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
-
-  const queriesPath = path.join(workspace, 'QUERIES.md');
-  if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
-    console.log(chalk.yellow(`  The publisher left queries: ${queriesPath}`));
-  }
-
-  if (opts.dryRun) {
-    console.log(chalk.blue('\nDry run: git was not touched.'));
-    console.log(G.renderReport(findings));
-    return errors.length ? EXIT.BLOCKED : EXIT.OK;
-  }
-
-  if (errors.length && !opts.force) {
-    console.error(chalk.red(`\nBlocked: ${errors.length} structural error(s). Nothing has been merged.`));
-    console.error(chalk.gray(`Read ${reportPath}, then either fix the returned files or re-run with --force.`));
-    return EXIT.BLOCKED;
-  }
-
-  // --- Merge ---------------------------------------------------------------
-  const originalBranch = git(contentDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const editBranch = `${tag}-edits`;
-
-  // A previous apply for this round may have left the branch behind. Reusing it would
-  // root the publisher's commit on the last attempt instead of on the tag, which is a
-  // different and wrong merge base.
-  const branchExists = gitAllowFail(contentDir, ['rev-parse', '-q', '--verify', `refs/heads/${editBranch}`]).ok;
-  if (branchExists) {
-    throw new Error(
-      `Branch ${editBranch} already exists from an earlier apply of this round.\n` +
-      `Delete it with:  git branch -D ${editBranch}\n` +
-      'Check first that nothing on it is unmerged.'
-    );
-  }
-
-  git(contentDir, ['checkout', '-q', '-b', editBranch, tag]);
-  try {
-    for (const [name, text] of Object.entries(normalized)) {
-      fs.writeFileSync(path.join(contentDir, name), text, 'utf8');
-    }
-    git(contentDir, ['add', '--'].concat(Object.keys(normalized)));
-
-    const staged = git(contentDir, ['diff', '--cached', '--name-only']);
-    if (!staged) {
-      console.log(chalk.yellow('The returned files are identical to the snapshot. Nothing to merge.'));
-      git(contentDir, ['checkout', '-q', originalBranch]);
-      git(contentDir, ['branch', '-q', '-D', editBranch]);
-      return EXIT.OK;
+      const message = `Publisher edits: ${label}` + (opts.force && errors.length
+        ? `\n\nApplied with --force over ${errors.length} guard error(s); see publisher/${label}/incoming/guard-report.md`
+        : '');
+      git(contentDir, ['commit', '-q', '--author', opts.author, '-m', message]);
+    } catch (err) {
+      // A failure here leaves nothing of value on editBranch: whatever partial writes or
+      // staging happened, no commit landed. The branch must not survive to trip the
+      // branch-exists guard on a retry -- that would make the user clean up wreckage from
+      // a failure that produced nothing, the same trap Task 7's tag rollback fixed for
+      // package-for-publisher.js. Same pattern here: append cleanup failures to the
+      // original error rather than replacing it, so the real cause is still reported.
+      git(contentDir, ['checkout', '-q', '--force', originalBranch]);
+      try {
+        git(contentDir, ['branch', '-q', '-D', editBranch]);
+      } catch (cleanupErr) {
+        err.message += `\n\nAdditionally, failed to remove branch ${editBranch} during cleanup: ${cleanupErr.message}` +
+          `\nRemove it manually before retrying: git branch -D ${editBranch}`;
+      }
+      throw err;
     }
 
-    const message = `Publisher edits: ${label}` + (opts.force && errors.length
-      ? `\n\nApplied with --force over ${errors.length} guard error(s); see publisher/${label}/incoming/guard-report.md`
-      : '');
-    git(contentDir, ['commit', '-q', '--author', opts.author, '-m', message]);
-  } catch (err) {
-    git(contentDir, ['checkout', '-q', '--force', originalBranch]);
-    throw err;
+    git(contentDir, ['checkout', '-q', originalBranch]);
+    const merge = gitAllowFail(contentDir, ['merge', '--no-ff', '-m', `Merge publisher edits: ${label}`, editBranch]);
+
+    // The merge outcome is decided above; nothing past this point may change it. A
+    // change-report is a diagnostic convenience, not a precondition -- if writing it
+    // fails (a huge diff past maxBuffer, a full disk), warn and keep reporting what
+    // actually happened to the merge.
+    const changeReportPath = path.join(workspace, 'change-report.md');
+    let changeReportOk = true;
+    try {
+      const diff = execFileSync('git', ['diff', `${tag}...${editBranch}`], { cwd: contentDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const stat = git(contentDir, ['diff', '--stat', `${tag}...${editBranch}`]);
+      fs.writeFileSync(changeReportPath,
+        `# Publisher changes — ${label}\n\n\`\`\`\n${stat}\n\`\`\`\n\n## Full diff\n\n\`\`\`diff\n${diff}\n\`\`\`\n`, 'utf8');
+    } catch (err) {
+      changeReportOk = false;
+      console.log(chalk.yellow(`  Could not write ${changeReportPath}: ${err.message}`));
+    }
+
+    if (!merge.ok) {
+      const conflicted = git(contentDir, ['diff', '--name-only', '--diff-filter=U']);
+      console.log(chalk.yellow('\nMerge stopped on conflicts. This is expected when both sides edited the same paragraph.'));
+      console.log(chalk.yellow('Conflicted files:\n' + conflicted));
+      console.log(chalk.gray('\nResolve them, then:  git add <files> && git commit'));
+      console.log(chalk.gray(`To abandon the merge:  git merge --abort`));
+      return EXIT.CONFLICTS;
+    }
+
+    console.log(chalk.green(`\nMerged cleanly into ${originalBranch}.`));
+    if (changeReportOk) console.log(chalk.gray(`  changes:  ${changeReportPath}`));
+    console.log(chalk.gray(`  guard:    ${reportPath}`));
+    console.log(chalk.gray('\nNext:  make book-validate  ->  npm run build:docx  ->  visual pass on the render'));
+    console.log(chalk.gray(`To undo this merge:  git reset --hard ORIG_HEAD`));
+    return EXIT.OK;
+  } finally {
+    // The normalized copies and both reports already live under workspace (a durable,
+    // inspectable path); this is purely the throwaway unpack directory. A failed cleanup
+    // here is a leftover temp dir, never a reason to change the exit code.
+    try {
+      fs.removeSync(scratch);
+    } catch (err) {
+      console.log(chalk.yellow(`  Could not remove scratch directory ${scratch}: ${err.message}`));
+    }
   }
-
-  git(contentDir, ['checkout', '-q', originalBranch]);
-  const merge = gitAllowFail(contentDir, ['merge', '--no-ff', '-m', `Merge publisher edits: ${label}`, editBranch]);
-
-  const diff = execFileSync('git', ['diff', `${tag}...${editBranch}`], { cwd: contentDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  const stat = git(contentDir, ['diff', '--stat', `${tag}...${editBranch}`]);
-  fs.writeFileSync(path.join(workspace, 'change-report.md'),
-    `# Publisher changes — ${label}\n\n\`\`\`\n${stat}\n\`\`\`\n\n## Full diff\n\n\`\`\`diff\n${diff}\n\`\`\`\n`, 'utf8');
-
-  if (!merge.ok) {
-    const conflicted = git(contentDir, ['diff', '--name-only', '--diff-filter=U']);
-    console.log(chalk.yellow('\nMerge stopped on conflicts. This is expected when both sides edited the same paragraph.'));
-    console.log(chalk.yellow('Conflicted files:\n' + conflicted));
-    console.log(chalk.gray('\nResolve them, then:  git add <files> && git commit'));
-    console.log(chalk.gray(`To abandon the merge:  git merge --abort`));
-    return EXIT.CONFLICTS;
-  }
-
-  console.log(chalk.green(`\nMerged cleanly into ${originalBranch}.`));
-  console.log(chalk.gray(`  changes:  ${path.join(workspace, 'change-report.md')}`));
-  console.log(chalk.gray(`  guard:    ${reportPath}`));
-  console.log(chalk.gray('\nNext:  make book-validate  ->  npm run build:docx  ->  visual pass on the render'));
-  console.log(chalk.gray(`To undo this merge:  git reset --hard ORIG_HEAD`));
-  return EXIT.OK;
 }
 
 if (require.main === module) {

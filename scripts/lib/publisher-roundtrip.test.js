@@ -101,5 +101,78 @@ t('apply-publisher-edits exposes its exit codes', () => {
   assert.deepStrictEqual(A.EXIT, { OK: 0, BLOCKED: 1, CONFLICTS: 2 });
 });
 
+console.log('\n=== apply: rollback on write failure ===');
+
+t('deletes the edit branch and restores the original branch when a returned file cannot be written', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-rollback-'));
+  const bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-rollback-bundle-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+  const originalText = (name) => `# ${name}\n\nOriginal paragraph text for ${name}.\n`;
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    for (const name of B.EXPECTED_FILES) {
+      fs.writeFileSync(path.join(tmpRepo, name), originalText(name), 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+    const originalBranch = run(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+
+    const label = 'rollback-write-test';
+    const tag = `publisher/${label}`;
+    run(['tag', tag]);
+    const commit = run(['rev-parse', `${tag}^{commit}`]).trim();
+
+    // MANIFEST.TXT must describe the SNAPSHOT (the tag's content), never the returned
+    // files -- verifyManifest checks it against `git show <tag>:<file>`, so every hash
+    // here is of the original, unedited text, even for ch5.md below.
+    const files = B.EXPECTED_FILES.map((name) => ({ name, sha256: B.sha256(originalText(name)) }));
+    fs.writeFileSync(path.join(bundleDir, 'MANIFEST.TXT'),
+      B.renderManifest({ label, tag, commit, date: '2026-01-01', files }), 'utf8');
+
+    // The returned bundle itself carries an edit to ch5.md, so apply finds a real diff
+    // and proceeds to stage and commit it, rather than short-circuiting on "identical to
+    // the snapshot."
+    for (const name of B.EXPECTED_FILES) {
+      const content = name === 'ch5.md' ? `# ch5\n\nEdited paragraph text for ch5.\n` : originalText(name);
+      fs.writeFileSync(path.join(bundleDir, name), content, 'utf8');
+    }
+
+    // Make the live ch5.md unwritable. HEAD is still exactly the tag's commit, so
+    // `git checkout -b <tag>-edits <tag>` inside apply is a same-content checkout and
+    // does not reset the file's mode -- the permission survives onto the new branch,
+    // where apply's write loop reaches ch5.md (the 8th of 13 files) and fails with
+    // EACCES, after several earlier files have already been overwritten uncommitted.
+    const liveFile = path.join(tmpRepo, 'ch5.md');
+    fs.chmodSync(liveFile, 0o444);
+
+    const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+    let failed = false;
+    try {
+      execFileSync(process.execPath, [applyCli, bundleDir, '--content-dir', tmpRepo], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      failed = true;
+    } finally {
+      fs.chmodSync(liveFile, 0o644); // restore so cleanup below can remove the repo
+    }
+    assert.ok(failed, 'expected apply-publisher-edits to exit non-zero when a returned file cannot be written');
+
+    const editBranches = run(['branch', '--list', `${tag}-edits`]).trim();
+    assert.strictEqual(editBranches, '', 'expected no edit branch left behind after a failed apply');
+
+    const currentBranch = run(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    assert.strictEqual(currentBranch, originalBranch, 'expected HEAD to be back on the original branch');
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    fs.rmSync(bundleDir, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
