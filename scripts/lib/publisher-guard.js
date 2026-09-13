@@ -88,4 +88,87 @@ function tokenize(text) {
   return { lines };
 }
 
-module.exports = { KIND, tokenize };
+const PLACEHOLDER_RE = /\{SITE_BASE\}|\{CODEPROMPTU_REPO_BASE\}/g;
+const TEMPLATE_VAR_RE = /\{\{[^}\n]*\}\}/g;
+const ATTR_BLOCK_RE = /\{[#.][^}\n]*\}/g;
+const IMAGE_RE = /!\[[^\]\n]*\]\(([^)\s]+)/g;
+const BRACKET_SPAN_RE = /\[[^\]\n]*\]/g;
+const CITE_KEY_RE = /@([A-Za-z0-9_][\w:.#$%&+?<>~/-]*)/g;
+
+function bump(counter, tokens) {
+  if (!tokens) return;
+  for (const token of tokens) counter[token] = (counter[token] || 0) + 1;
+}
+
+/**
+ * Reduce a file to the structural facts the guard compares.
+ *
+ * Div fence lines are captured verbatim and deliberately excluded from attrBlocks:
+ * `::: {.promptref title="…" url="{SITE_BASE}/…"}` nests a brace pair inside its
+ * attribute, so ATTR_BLOCK_RE truncates it at the inner `}`. Comparing the whole
+ * fence line is both simpler and stricter.
+ */
+function fingerprint(text) {
+  const { lines } = tokenize(text);
+  const fp = {
+    divFences: [],
+    codeFences: [],
+    placeholders: {},
+    templateVars: {},
+    attrBlocks: {},
+    imagePaths: {},
+    citations: {},
+    headingLevels: [],
+    codeBlocks: [],
+    lineCount: lines.length,
+  };
+
+  let currentBlock = null;
+
+  for (const line of lines) {
+    if (line.kind === KIND.CODE_FENCE) {
+      fp.codeFences.push(line.raw.trim());
+      if (currentBlock === null) {
+        currentBlock = [];
+      } else {
+        fp.codeBlocks.push(currentBlock.join('\n'));
+        currentBlock = null;
+      }
+      continue;
+    }
+
+    if (line.kind === KIND.CODE) {
+      if (currentBlock !== null) currentBlock.push(line.raw);
+      continue; // indented code is excluded from every token scan
+    }
+
+    if (line.kind === KIND.DIV_FENCE) {
+      fp.divFences.push(line.raw.trim());
+      bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE));
+      continue;
+    }
+
+    if (line.kind === KIND.HEADING) {
+      fp.headingLevels.push(line.raw.match(/^#+/)[0].length);
+    }
+
+    bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE));
+    bump(fp.templateVars, line.raw.match(TEMPLATE_VAR_RE));
+    bump(fp.attrBlocks, line.raw.match(ATTR_BLOCK_RE));
+
+    for (const m of line.raw.matchAll(IMAGE_RE)) bump(fp.imagePaths, [m[1]]);
+
+    for (const span of line.raw.match(BRACKET_SPAN_RE) || []) {
+      if (!span.includes('@')) continue;
+      for (const m of span.matchAll(CITE_KEY_RE)) bump(fp.citations, [m[1]]);
+    }
+  }
+
+  // An unterminated fence leaves a dangling block. Keep it so code-content can still
+  // report; code-fence-integrity is what flags the imbalance itself.
+  if (currentBlock !== null) fp.codeBlocks.push(currentBlock.join('\n'));
+
+  return fp;
+}
+
+module.exports = { KIND, tokenize, fingerprint };
