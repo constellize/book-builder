@@ -65,7 +65,12 @@ function tokenize(text) {
       inList = false;
       if (/^:+$/.test(trimmed)) divDepth = Math.max(0, divDepth - 1);
       else divDepth += 1;
-    } else if (/^#{1,6}\s/.test(line)) {
+    // Up to three leading spaces is still a heading to pandoc/CommonMark; four or more
+    // is an indented code block, which is the whole point of the indentedHeadings
+    // fingerprint below. Matching pandoc here keeps a harmlessly indented heading out
+    // of the heading-structure warning and leaves the destructive case to fall through
+    // to the indented-code branch, where it can be reported as an error.
+    } else if (/^ {0,3}#{1,6}\s/.test(line)) {
       kind = KIND.HEADING;
       inList = false;
     } else if (/^\s*\|/.test(line)) {
@@ -76,8 +81,8 @@ function tokenize(text) {
       inList = true;
     } else if (inList && /^\s{2,}\S/.test(line)) {
       kind = KIND.LIST;
-    } else if (/^\s{4,}\S/.test(line)) {
-      kind = KIND.CODE; // indented code block
+    } else if (/^(?:\s{4,}|\t)\S/.test(line)) {
+      kind = KIND.CODE; // indented code block (a leading tab is four columns to pandoc)
     } else {
       kind = KIND.TEXT;
     }
@@ -95,9 +100,21 @@ const IMAGE_RE = /!\[[^\]\n]*\]\(([^)\s]+)/g;
 const BRACKET_SPAN_RE = /\[[^\]\n]*\]/g;
 const CITE_KEY_RE = /@([A-Za-z0-9_][\w:.#$%&+?<>~/-]*)/g;
 
-function bump(counter, tokens) {
+/**
+ * A heading that has been pushed to column 4 or beyond. Pandoc renders it as an
+ * indented code block, so the heading silently disappears from the finished book --
+ * the same class of silent destruction as an indented ::: fence.
+ */
+const INDENTED_HEADING_RE = /^[ \t]{1,}#{1,6}\s/;
+
+/**
+ * Counters map token -> the 1-based line numbers it was found on. The length is the
+ * count; the numbers are what makes `{#fig:thing} count changed 3 -> 2` actionable on
+ * a 40 KB chapter (design spec line 265: "line numbers on both sides").
+ */
+function bump(counter, tokens, n) {
   if (!tokens) return;
-  for (const token of tokens) counter[token] = (counter[token] || 0) + 1;
+  for (const token of tokens) (counter[token] || (counter[token] = [])).push(n);
 }
 
 /**
@@ -107,6 +124,12 @@ function bump(counter, tokens) {
  * `::: {.promptref title="…" url="{SITE_BASE}/…"}` nests a brace pair inside its
  * attribute, so ATTR_BLOCK_RE truncates it at the inner `}`. Comparing the whole
  * fence line is both simpler and stricter.
+ *
+ * Fence lines keep their LEADING whitespace and lose only their trailing whitespace.
+ * That asymmetry is load-bearing: indenting a `:::` or ``` fence is enough for pandoc
+ * to stop seeing a fence at all -- an indented promptref renders as a stray code block
+ * followed by a paragraph ending in `:::`, and the callout is simply gone. A `.trim()`
+ * here hid that mutation from every comparison below.
  */
 function fingerprint(text) {
   const { lines } = tokenize(text);
@@ -119,15 +142,16 @@ function fingerprint(text) {
     imagePaths: {},
     citations: {},
     headingLevels: [],
+    indentedHeadings: {},
     codeBlocks: [],
-    lineCount: lines.length,
   };
 
   let currentBlock = null;
+  const rstrip = (s) => s.replace(/\s+$/, '');
 
   for (const line of lines) {
     if (line.kind === KIND.CODE_FENCE) {
-      fp.codeFences.push(line.raw.trim());
+      fp.codeFences.push({ text: rstrip(line.raw), n: line.n });
       if (currentBlock === null) {
         currentBlock = [];
       } else {
@@ -138,29 +162,36 @@ function fingerprint(text) {
     }
 
     if (line.kind === KIND.CODE) {
-      if (currentBlock !== null) currentBlock.push(line.raw);
+      if (currentBlock !== null) {
+        currentBlock.push(line.raw);
+      } else if (INDENTED_HEADING_RE.test(line.raw)) {
+        // An indented-code line that is otherwise a valid ATX heading, and not inside a
+        // ``` block. `# comment` lines in shell samples are inside a fence and so never
+        // reach here.
+        bump(fp.indentedHeadings, [rstrip(line.raw)], line.n);
+      }
       continue; // indented code is excluded from every token scan
     }
 
     if (line.kind === KIND.DIV_FENCE) {
-      fp.divFences.push(line.raw.trim());
-      bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE));
+      fp.divFences.push({ text: rstrip(line.raw), n: line.n });
+      bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE), line.n);
       continue;
     }
 
     if (line.kind === KIND.HEADING) {
-      fp.headingLevels.push(line.raw.match(/^#+/)[0].length);
+      fp.headingLevels.push(line.raw.match(/^ {0,3}(#+)/)[1].length);
     }
 
-    bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE));
-    bump(fp.templateVars, line.raw.match(TEMPLATE_VAR_RE));
-    bump(fp.attrBlocks, line.raw.match(ATTR_BLOCK_RE));
+    bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE), line.n);
+    bump(fp.templateVars, line.raw.match(TEMPLATE_VAR_RE), line.n);
+    bump(fp.attrBlocks, line.raw.match(ATTR_BLOCK_RE), line.n);
 
-    for (const m of line.raw.matchAll(IMAGE_RE)) bump(fp.imagePaths, [m[1]]);
+    for (const m of line.raw.matchAll(IMAGE_RE)) bump(fp.imagePaths, [m[1]], line.n);
 
     for (const span of line.raw.match(BRACKET_SPAN_RE) || []) {
       if (!span.includes('@')) continue;
-      for (const m of span.matchAll(CITE_KEY_RE)) bump(fp.citations, [m[1]]);
+      for (const m of span.matchAll(CITE_KEY_RE)) bump(fp.citations, [m[1]], line.n);
     }
   }
 
@@ -185,40 +216,70 @@ const RULES = Object.freeze({
   'code-content': 'warning',
   'change-volume': 'warning',
   'line-endings': 'warning',
+  'dewrap-applied': 'warning',
 });
+
+/**
+ * Build a finding for a rule the CLIs raise themselves, so `severity` is never
+ * hand-copied away from the RULES table. `dewrap-applied` is the one rule nothing in
+ * this module can detect: only the apply CLI knows how many paragraphs it rewrote.
+ */
+function makeFinding(file, rule, message, detail) {
+  return { file, rule, severity: RULES[rule], message, detail };
+}
 
 // Bundle files that are metadata, not book sources.
 const BUNDLE_META_FILES = new Set(['README.md', 'MANIFEST.TXT', 'QUERIES.md']);
 
 const CHANGE_VOLUME_THRESHOLD = 0.4;
 
+/** Counter values are arrays of 1-based line numbers; their length is the count. */
 function counterDiff(before, after) {
   const out = [];
   for (const token of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const from = before[token] || 0;
-    const to = after[token] || 0;
-    if (from !== to) out.push({ token, from, to });
+    const from = before[token] || [];
+    const to = after[token] || [];
+    if (from.length !== to.length) out.push({ token, from, to });
   }
   return out.sort((a, b) => a.token.localeCompare(b.token));
+}
+
+// Enough to find the token by eye, not an exhaustive dump of a 40 KB chapter.
+const MAX_LINES_SHOWN = 6;
+
+function atLines(numbers) {
+  if (!numbers.length) return '';
+  const shown = numbers.slice(0, MAX_LINES_SHOWN).join(', ');
+  const more = numbers.length > MAX_LINES_SHOWN ? `, …+${numbers.length - MAX_LINES_SHOWN} more` : '';
+  return `line${numbers.length === 1 ? '' : 's'} ${shown}${more}`;
 }
 
 function describeCounterDiff(diff) {
   return diff
     .map(({ token, from, to }) =>
-      to === 0 ? `removed ${token} (was ×${from})`
-        : from === 0 ? `added ${token} (now ×${to})`
-          : `${token} count changed ${from} → ${to}`)
+      to.length === 0 ? `removed ${token} (was ×${from.length} at ${atLines(from)})`
+        : from.length === 0 ? `added ${token} (now ×${to.length} at ${atLines(to)})`
+          : `${token} count changed ${from.length} → ${to.length} (was ${atLines(from)}; now ${atLines(to)})`)
     .join('; ');
 }
 
+/** Compares `{ text, n }` fence entries by text; `n` rides along for the report. */
 function sequenceDiff(before, after) {
   const limit = Math.max(before.length, after.length);
   for (let i = 0; i < limit; i++) {
-    if (before[i] !== after[i]) {
-      return { index: i, before: before[i], after: after[i] };
+    const a = before[i];
+    const b = after[i];
+    if ((a ? a.text : undefined) !== (b ? b.text : undefined)) {
+      return { index: i, before: a, after: b };
     }
   }
   return null;
+}
+
+function describeFence(entry, side) {
+  return entry === undefined
+    ? `${side}: (absent)`
+    : `${side} (line ${entry.n}): ${entry.text}`;
 }
 
 /**
@@ -246,8 +307,11 @@ function changedLineFraction(before, after) {
  */
 function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = null }) {
   const findings = [];
-  const add = (rule, message, detail) =>
-    findings.push({ file: name, rule, severity: RULES[rule], message, detail });
+  // `severity` defaults to the rule's entry in RULES and is overridden only where the
+  // same rule covers two materially different situations -- see the indented-heading
+  // and citations blocks below, both of which say why in place.
+  const add = (rule, message, detail, severity = RULES[rule]) =>
+    findings.push({ file: name, rule, severity, message, detail });
 
   if (notes.invalidUtf8) {
     add('encoding', 'File is not valid UTF-8; no further checks were run');
@@ -261,7 +325,7 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
   if (fenceDiff) {
     add('fence-integrity',
       `::: fence #${fenceDiff.index + 1} changed`,
-      `was: ${fenceDiff.before === undefined ? '(absent)' : fenceDiff.before}\nnow: ${fenceDiff.after === undefined ? '(absent)' : fenceDiff.after}`);
+      `${describeFence(fenceDiff.before, 'was')}\n${describeFence(fenceDiff.after, 'now')}`);
   }
   if (after.divFences.length % 2 !== 0) {
     add('fence-integrity', `::: fences do not balance (${after.divFences.length} fence lines)`);
@@ -271,7 +335,7 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
   if (codeFenceDiff) {
     add('code-fence-integrity',
       `code fence #${codeFenceDiff.index + 1} changed`,
-      `was: ${codeFenceDiff.before === undefined ? '(absent)' : codeFenceDiff.before}\nnow: ${codeFenceDiff.after === undefined ? '(absent)' : codeFenceDiff.after}`);
+      `${describeFence(codeFenceDiff.before, 'was')}\n${describeFence(codeFenceDiff.after, 'now')}`);
   }
   if (after.codeFences.length % 2 !== 0) {
     add('code-fence-integrity', `code fences do not balance (${after.codeFences.length} fence lines)`);
@@ -291,8 +355,39 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
   if (refKeys) {
     const unresolved = Object.keys(after.citations).filter((k) => !refKeys.has(k)).sort();
     if (unresolved.length) {
-      add('citations', `citation key(s) not present in references.json: ${unresolved.join(', ')}`);
+      // refKeys comes from the WORKING TREE's references.json, not the snapshot's. When
+      // the returned citations are byte-for-byte the snapshot's, an unresolvable key
+      // cannot have been caused by the publisher -- the author removed or renamed the
+      // reference while the round was out. Blocking the merge at error severity there
+      // forces --force, which switches off every error rule at once, including a genuine
+      // broken fence in another chapter. So: still reported, still under `citations`,
+      // but as a warning that names the real cause.
+      const publisherTouchedCitations = counterDiff(before.citations, after.citations).length > 0;
+      const keys = unresolved.join(', ');
+      if (publisherTouchedCitations) {
+        add('citations', `citation key(s) not present in references.json: ${keys}`);
+      } else {
+        add('citations',
+          `citation key(s) not present in references.json: ${keys}` +
+          ' — the returned citations are identical to the snapshot, so these keys were' +
+          ' removed or renamed in references.json while the round was out, not by the publisher',
+          undefined, 'warning');
+      }
     }
+  }
+
+  const indentedHeadings = counterDiff(before.indentedHeadings, after.indentedHeadings)
+    .filter(({ from, to }) => to.length > from.length);
+  if (indentedHeadings.length) {
+    // Error, not the heading-structure warning it would otherwise raise: four spaces of
+    // indentation turns an ATX heading into an indented code block, so the heading is
+    // gone from the finished book and its text ships as a monospaced literal. That is
+    // destruction, not the conscious restructuring the warning exists for.
+    add('heading-structure',
+      `heading(s) indented into a code block: ${describeCounterDiff(indentedHeadings)}`,
+      'Four or more leading spaces makes pandoc read the line as indented code, not a heading.\n' +
+      indentedHeadings.map(({ token, to }) => `line ${to[to.length - 1]}: ${token}`).join('\n'),
+      'error');
   }
 
   if (before.headingLevels.join(',') !== after.headingLevels.join(',')) {
@@ -384,5 +479,5 @@ function renderReport(findings) {
 
 module.exports = {
   KIND, tokenize, fingerprint, RULES, BUNDLE_META_FILES,
-  compareFiles, checkFileSet, hasErrors, renderReport,
+  compareFiles, checkFileSet, hasErrors, renderReport, makeFinding,
 };

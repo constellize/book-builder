@@ -12,12 +12,51 @@
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
+const glob = require('glob');
 const { execFileSync } = require('child_process');
 const { program } = require('commander');
 
 const B = require('./lib/publisher-bundle.js');
+const bookConfig = require('../config/book.config.js');
 
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+/**
+ * B.EXPECTED_FILES is a second declaration of something book.config.js already states:
+ * the build reads `foreword-faq.md`, `introduction.md`, `ch[1-9].md`, `app[AB].md`.
+ * They agree today. If they ever diverge -- a tenth chapter, a renamed appendix -- the
+ * publisher silently never sees the new file and no guard rule fires, because every
+ * rule is scoped to EXPECTED_FILES in the first place. Nothing downstream can catch
+ * that, so catch it here, loudly, before a round goes out.
+ *
+ * Resolution mirrors build-book.js exactly: the same glob patterns against the same
+ * content root.
+ */
+function assertSourceInventory(contentDir) {
+  const { source } = bookConfig;
+  const resolved = [source.foreword, source.introduction]
+    .filter(Boolean)
+    .filter((name) => fs.existsSync(path.join(contentDir, name)));
+
+  for (const pattern of [].concat(source.chapters || [], source.appendices || [])) {
+    resolved.push(...glob.sync(pattern, { cwd: contentDir }));
+  }
+
+  const fromConfig = [...new Set(resolved)].sort();
+  const fromBundle = [...B.EXPECTED_FILES].sort();
+  if (fromConfig.join('\n') === fromBundle.join('\n')) return;
+
+  const missing = fromBundle.filter((f) => !fromConfig.includes(f));
+  const extra = fromConfig.filter((f) => !fromBundle.includes(f));
+  throw new Error(
+    'The book config and the publisher bundle disagree about which files the build reads.\n' +
+    `  book.config.js resolves to: ${fromConfig.join(', ') || '(nothing)'}\n` +
+    `  EXPECTED_FILES lists:       ${fromBundle.join(', ')}\n` +
+    (extra.length ? `  Not in EXPECTED_FILES: ${extra.join(', ')} — the publisher would never see these.\n` : '') +
+    (missing.length ? `  Not found via the config: ${missing.join(', ')}\n` : '') +
+    '\nReconcile config/book.config.js and EXPECTED_FILES in scripts/lib/publisher-bundle.js before packaging.'
+  );
+}
 
 function resolveLabel(requested, existingTags) {
   if (requested !== undefined && requested !== null && String(requested).trim() !== '') {
@@ -35,11 +74,13 @@ function resolveLabel(requested, existingTags) {
 }
 
 function buildReadme({ label, date, edition, version }) {
+  // A list, not three consecutive lines: markdown joins consecutive lines into one
+  // paragraph, so the three fields rendered as a single run-on sentence.
   return `# The Constellize Method — markdown for copy-editing
 
-**Round:** ${label}
-**Packed:** ${date}
-**Edition:** ${edition} (version ${version})
+- **Round:** ${label}
+- **Packed:** ${date}
+- **Edition:** ${edition} (version ${version})
 
 Thank you for working on this. These are the book's source files, exactly as the
 build system reads them. Editing them directly means your changes go straight into
@@ -72,7 +113,7 @@ usually fails silently — the book builds, and the affected element is simply m
 | \`{#fig:…}\`, \`{#sec:…}\` | \`![A diagram](images/x.png){#fig:map-first}\` | The label other pages cross-reference. |
 | \`[@…]\` | \`[@atkinson2026]\` | A citation. The bibliography is generated from these. |
 | Image paths | \`images/diagrams/ch3/thing.png\` | The alt text before it is yours to edit; the path is not. |
-| Anything inside \`\`\`\`\`\` fences | shell and code samples | Code is verified against a working repository. |
+| Anything inside \`\`\`\`\` \`\`\` \`\`\`\`\` fences | shell and code samples | Code is verified against a working repository. |
 
 ## Two requests
 
@@ -85,7 +126,7 @@ Anything written into the chapter files is treated as book text.
 
 ## Returning your work
 
-Save every file as UTF-8, keep all 13 filenames exactly as they are, add no files and
+Save every file as UTF-8, keep all ${B.EXPECTED_FILES.length} filenames exactly as they are, add no files and
 remove none, then zip this folder back up and send it.
 `;
 }
@@ -138,6 +179,7 @@ function main() {
   const contentDir = path.resolve(program.args[0] || '.');
 
   B.assertArchiveTools();
+  assertSourceInventory(contentDir);
 
   try {
     git(contentDir, ['rev-parse', '--is-inside-work-tree']);
@@ -202,8 +244,7 @@ function main() {
         edition: readMetadataField(contentDir, tag, 'edition', 'unknown'),
         version: readMetadataField(contentDir, tag, 'version', 'unknown'),
       }), 'utf8');
-    fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'),
-      `# Queries — ${label}\n\nList anything you want the author to answer or decide.\nOne query per bullet, with the file and a quoted phrase so it can be found.\n\n- \n`, 'utf8');
+    fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'), B.renderQueries(label), 'utf8');
 
     const zipPath = path.join(outgoingDir, `${bundleName}.zip`);
     fs.removeSync(zipPath);
@@ -229,8 +270,11 @@ if (require.main === module) {
     main();
   } catch (err) {
     console.error(chalk.red(`Packaging failed: ${err.message}`));
-    process.exit(1);
+    // process.exitCode, not process.exit(): the latter tears the process down before a
+    // piped stdout/stderr has necessarily drained, and the error text above is the only
+    // thing that explains the failure.
+    process.exitCode = 1;
   }
 }
 
-module.exports = { resolveLabel, buildReadme };
+module.exports = { resolveLabel, buildReadme, assertSourceInventory };

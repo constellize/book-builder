@@ -129,6 +129,45 @@ function sha256(text) {
 }
 
 /**
+ * QUERIES.md gives editorial questions an outlet, so they do not get written inline
+ * into the prose as HTML comments or parenthetical notes.
+ *
+ * The template lives here rather than in package-for-publisher.js because countQueries
+ * below has to recognise it: the apply step warns "the publisher left queries", and a
+ * warning that also fires on the untouched template we shipped is not a signal.
+ */
+const QUERIES_BOILERPLATE = Object.freeze([
+  'List anything you want the author to answer or decide.',
+  'One query per bullet, with the file and a quoted phrase so it can be found.',
+]);
+
+function renderQueries(label) {
+  return `# Queries — ${label}\n\n${QUERIES_BOILERPLATE.join('\n')}\n\n- \n`;
+}
+
+/**
+ * Count what the publisher actually wrote: filled-in bullets first, since that is the
+ * shape the template asks for, and any other prose they left behind second, since a
+ * publisher who ignores the bullet format still has queries worth reading.
+ *
+ * Everything the template itself contains -- its heading, its two instruction lines,
+ * and its one empty bullet -- counts as nothing.
+ */
+function countQueries(text) {
+  const boilerplate = new Set(QUERIES_BOILERPLATE);
+  let count = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) continue;          // the heading we shipped
+    if (boilerplate.has(line)) continue;         // the instructions we shipped
+    if (/^[-*+]$/.test(line)) continue;          // the empty bullet we shipped
+    count++;                                     // a filled-in bullet, or free prose
+  }
+  return count;
+}
+
+/**
  * MANIFEST.TXT is plain text so the publisher can read it, and so a human can tell at
  * a glance which round a returned bundle belongs to.
  *
@@ -222,5 +261,6 @@ module.exports = {
   EXPECTED_FILES, BUNDLE_META_FILES,
   normalizeBuffer, readAndNormalize, dewrapParagraphs,
   sha256, renderManifest, parseManifest, verifyManifest,
+  renderQueries, countQueries,
   assertArchiveTools, zipDir, unzipTo,
 };

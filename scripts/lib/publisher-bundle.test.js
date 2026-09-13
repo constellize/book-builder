@@ -148,6 +148,34 @@ t('preserves a hard-wrapped paragraph that was also edited, rather than revertin
   assert.strictEqual(out.dewrapped, 0);
 });
 
+console.log('\n=== queries ===');
+
+t('the shipped QUERIES.md template counts as zero queries', () => {
+  // The apply step warns "the publisher left queries" off this count. The template is
+  // six lines after trimming, so a line-count test fired on every untouched round.
+  assert.strictEqual(B.countQueries(B.renderQueries('round-1')), 0);
+});
+
+t('counts bullets the publisher filled in', () => {
+  const text = B.renderQueries('round-1') +
+    '- ch3.md: "the constellation" — is this capitalised elsewhere?\n' +
+    '- appA.md: the table on p.4 has two rows labelled (b)\n';
+  assert.strictEqual(B.countQueries(text), 2);
+});
+
+t('counts a query the publisher wrote as prose instead of a bullet', () => {
+  const text = B.renderQueries('round-1') + '\nPlease confirm the spelling of the author name.\n';
+  assert.strictEqual(B.countQueries(text), 1);
+});
+
+t('an empty file counts as zero queries', () => {
+  assert.strictEqual(B.countQueries(''), 0);
+});
+
+t('renders a template that names the round', () => {
+  assert.ok(B.renderQueries('copy-edit-pass').includes('copy-edit-pass'));
+});
+
 console.log('\n=== manifest ===');
 
 const MANIFEST_INPUT = {

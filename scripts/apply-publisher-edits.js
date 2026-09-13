@@ -19,6 +19,10 @@ const { program } = require('commander');
 
 const B = require('./lib/publisher-bundle.js');
 const G = require('./lib/publisher-guard.js');
+// resolveLabel, not a second copy of its rules: --round 1 must mean the same round-1
+// here that it meant when the package CLI created publisher/round-1. Requiring the
+// module is side-effect-free -- its own CLI body is behind a require.main guard.
+const { resolveLabel } = require('./package-for-publisher.js');
 
 const EXIT = { OK: 0, BLOCKED: 1, CONFLICTS: 2 };
 
@@ -69,6 +73,51 @@ function filterOwnWorkspace(porcelain) {
     .split('\n')
     .filter((line) => line && !OWN_WORKSPACE_RE.test(line))
     .join('\n');
+}
+
+/**
+ * Design spec line 218: `--dry-run` performs steps 1-4 *plus the diff*. Without it the
+ * first command of every round answers "is anything structurally broken?" but not the
+ * question the author actually has -- what did the publisher change, and how much?
+ *
+ * Both sides are written under the scratch directory and diffed with `--no-index`, so
+ * this never touches the book repo, never runs `git diff` against its index, and leaves
+ * nothing behind when the scratch dir is removed on exit.
+ */
+function printDryRunDiffStat(contentDir, scratch, tag, snapshot, normalized) {
+  const snapDir = path.join(scratch, 'snapshot');
+  const retDir = path.join(scratch, 'returned');
+  fs.ensureDirSync(snapDir);
+  fs.ensureDirSync(retDir);
+
+  const rows = [];
+  let changed = 0;
+  for (const name of B.EXPECTED_FILES) {
+    if (normalized[name] === undefined) continue; // absent from the bundle; file-set has it
+    const a = path.join(snapDir, name);
+    const b = path.join(retDir, name);
+    fs.writeFileSync(a, snapshot[name], 'utf8');
+    fs.writeFileSync(b, normalized[name], 'utf8');
+
+    // --no-index exits 1 when the files differ, which is not a failure here.
+    const res = gitAllowFail(contentDir, ['diff', '--no-index', '--numstat', '--', a, b]);
+    const m = res.out.match(/^(\d+)\t(\d+)\t/m);
+    if (!m) continue; // identical
+    changed++;
+    rows.push({ name, added: Number(m[1]), removed: Number(m[2]) });
+  }
+
+  console.log(chalk.blue(`\nReturned files vs ${tag}:`));
+  if (!rows.length) {
+    console.log(chalk.gray('  no file differs from the snapshot'));
+    return;
+  }
+  const width = Math.max(...rows.map((r) => r.name.length));
+  for (const row of rows) {
+    console.log(chalk.gray(`  ${row.name.padEnd(width)}  +${row.added}  -${row.removed}`));
+  }
+  const unchanged = Object.keys(normalized).length - changed;
+  console.log(chalk.gray(`  ${changed} file(s) changed, ${unchanged} unchanged`));
 }
 
 function main() {
@@ -137,7 +186,11 @@ function main() {
       }
     }
 
-    const label = manifest ? manifest.label : opts.round;
+    // --round is the documented escape hatch for a missing MANIFEST.TXT, i.e. exactly
+    // when the operator is already in trouble. It must accept the same spellings the
+    // package CLI accepts: `--round 1` created publisher/round-1, so it has to resolve
+    // to round-1 here too, not to the tag publisher/1 that has never existed.
+    const label = manifest ? manifest.label : (opts.round ? resolveLabel(opts.round, []) : null);
     if (!label) {
       throw new Error('MANIFEST.TXT is missing or malformed. Re-run with --round <label> to name the round explicitly.');
     }
@@ -218,7 +271,18 @@ function main() {
       if (!notes.invalidUtf8 && opts.dewrap !== false) {
         const out = B.dewrapParagraphs(snapshot[name], text);
         finalText = out.text;
-        if (out.dewrapped) console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
+        if (out.dewrapped) {
+          console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
+          // De-wrap is the one place this tool rewrites the publisher's bytes on its
+          // own initiative, so it is the one action that most needs an audit trail. A
+          // console line scrolls away; guard-report.md is what the author still has in
+          // six months. (Design spec line 260 lists dewrap-applied as a warning rule.)
+          findings.push(G.makeFinding(name, 'dewrap-applied',
+            `restored the snapshot's line breaks on ${out.dewrapped} re-wrapped paragraph(s)`,
+            'Only paragraphs whose whitespace-collapsed text was byte-identical to the snapshot were\n' +
+            'rewritten, so no edited wording was touched. Re-run with --no-dewrap to keep the\n' +
+            "publisher's line breaks."));
+        }
       }
       normalized[name] = finalText;
       fs.writeFileSync(path.join(outDir, name), finalText, 'utf8');
@@ -245,15 +309,23 @@ function main() {
       ? `  guard: ${errors.length} error(s), ${warnings.length} warning(s) (preview only -- shown below, not saved)`
       : `  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
 
+    // Line count was the wrong test: the template this tool ships is itself six lines
+    // after trimming, so an untouched QUERIES.md fired the warning on every single
+    // round. countQueries ignores everything the template contains and counts only what
+    // the publisher added.
     const queriesPath = path.join(outDir, 'QUERIES.md');
-    if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
-      console.log(chalk.yellow(dryRun
-        ? '  The publisher left queries (preview only; re-run without --dry-run to save a copy).'
-        : `  The publisher left queries: ${queriesPath}`));
+    if (fs.existsSync(queriesPath)) {
+      const queries = B.countQueries(fs.readFileSync(queriesPath, 'utf8'));
+      if (queries > 0) {
+        console.log(chalk.yellow(dryRun
+          ? `  The publisher left ${queries} quer${queries === 1 ? 'y' : 'ies'} (preview only; re-run without --dry-run to save a copy).`
+          : `  The publisher left ${queries} quer${queries === 1 ? 'y' : 'ies'}: ${queriesPath}`));
+      }
     }
 
     if (dryRun) {
       console.log(chalk.blue('\nDry run: git was not touched.'));
+      printDryRunDiffStat(contentDir, scratch, tag, snapshot, normalized);
       console.log(G.renderReport(findings));
       return errors.length ? EXIT.BLOCKED : EXIT.OK;
     }
@@ -396,11 +468,14 @@ function main() {
 }
 
 if (require.main === module) {
+  // process.exitCode, not process.exit(): process.exit() tears the process down without
+  // waiting for a piped stdout to drain, and on the --dry-run path stdout -- the guard
+  // report and the diff stat -- is the entire output of the run.
   try {
-    process.exit(main());
+    process.exitCode = main();
   } catch (err) {
     console.error(chalk.red(`Apply failed: ${err.message}`));
-    process.exit(EXIT.BLOCKED);
+    process.exitCode = EXIT.BLOCKED;
   }
 }
 

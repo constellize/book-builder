@@ -64,14 +64,23 @@ t('deletes the tag it created when a source file is missing at the tag', () => {
     run(['config', 'user.email', 'test@example.com']);
     run(['config', 'user.name', 'Test']);
 
-    // Commit all 13 expected sources except one, so the `git show` loop inside
+    // Write all 13 expected sources but commit only 12, so the `git show` loop inside
     // package-for-publisher.js throws partway through -- after the tag already exists.
+    //
+    // ch9.md has to exist on disk (assertSourceInventory globs the content root and
+    // would otherwise stop the run before the tag is ever created, which would make
+    // this test pass without exercising the rollback at all) and has to be invisible to
+    // `git status` (or the dirty check would stop the run instead). An entry in
+    // .git/info/exclude gives exactly that: present for glob, ignored by status,
+    // absent from the commit and therefore absent from the tag.
+    fs.mkdirSync(path.join(tmpRepo, '.git', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRepo, '.git', 'info', 'exclude'), 'ch9.md\n', 'utf8');
     for (const name of B.EXPECTED_FILES) {
-      if (name === 'ch9.md') continue; // deliberately missing
       fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n`, 'utf8');
     }
     run(['add', '.']);
     run(['commit', '-q', '-m', 'initial']);
+    assert.strictEqual(run(['ls-files', 'ch9.md']).trim(), '', 'test setup: ch9.md must not be committed');
 
     const cliPath = path.join(__dirname, '..', 'package-for-publisher.js');
     let failed = false;
@@ -641,6 +650,101 @@ t('applying a zip works the same as applying a directory', () => {
   const out = apply(dir, zipPath);
   assert.strictEqual(out.status, 0, out.stderr + out.stdout);
   assert.ok(read(dir, 'ch1.md').includes('Zipped paragraph'));
+});
+
+t('--round 1 in the apply CLI means the same round-1 the package CLI created', () => {
+  // The package CLI normalises `--round 1` to the label round-1 and tags
+  // publisher/round-1. The apply CLI used opts.round raw, so the documented escape
+  // hatch for a missing MANIFEST.TXT looked for the tag publisher/1 and failed with
+  // "cannot be reconstructed" while publisher/round-1 sat right there.
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, '1').status, 0);
+  assert.ok(sh(dir, 'git', ['tag', '-l', 'publisher/round-1']).trim(), 'package created publisher/round-1');
+
+  const bundle = bundleDirFor(dir, 'round-1');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('First paragraph', 'Escape-hatch paragraph'), 'utf8');
+  fs.unlinkSync(path.join(bundle, 'MANIFEST.TXT')); // the situation --round exists for
+
+  const out = apply(dir, bundle, ['--round', '1']);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(!/publisher\/1\b/.test(out.stderr), `must not look for the tag publisher/1: ${out.stderr}`);
+  assert.ok(read(dir, 'ch1.md').includes('Escape-hatch paragraph'));
+});
+
+t('--dry-run prints a diff stat of the returned files against the tag', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('First paragraph', 'Opening paragraph'), 'utf8');
+
+  const out = apply(dir, bundle, ['--dry-run']);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(/Returned files vs publisher\/r1/.test(out.stdout), `expected a diff header, got: ${out.stdout}`);
+  assert.ok(/ch1\.md\s+\+1\s+-1/.test(out.stdout), `expected ch1.md's +/- counts, got: ${out.stdout}`);
+  assert.ok(/1 file\(s\) changed, 12 unchanged/.test(out.stdout), `expected a summary line, got: ${out.stdout}`);
+  // The diff must not leave anything in the book repo -- dry-run touches nothing.
+  assert.strictEqual(sh(dir, 'git', ['status', '--porcelain', '--untracked-files=no']).trim(), '');
+  assert.ok(!fs.existsSync(path.join(dir, 'publisher', 'r1', 'incoming')), 'no incoming/ dir on a dry run');
+});
+
+t('de-wrap is recorded in guard-report.md, not only on stdout', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  // Hard-wrap ch1's second paragraph without changing a word, and make a real edit to
+  // ch2 so there is something to merge.
+  const ch1 = read(bundle, 'ch1.md');
+  const rewrapped = ch1.replace(/^(Second paragraph[^\n]*), (long[^\n]*)$/m, '$1,\n$2');
+  assert.notStrictEqual(rewrapped, ch1, 'the re-wrap fixture must actually insert a line break');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), rewrapped, 'utf8');
+  fs.writeFileSync(path.join(bundle, 'ch2.md'),
+    read(bundle, 'ch2.md').replace('First paragraph', 'Edited paragraph'), 'utf8');
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+
+  const report = fs.readFileSync(path.join(dir, 'publisher', 'r1', 'incoming', 'guard-report.md'), 'utf8');
+  assert.ok(/dewrap-applied/.test(report), `guard-report.md must record the rewrite, got:\n${report}`);
+  assert.ok(/1 re-wrapped paragraph/.test(report), `guard-report.md must record the count, got:\n${report}`);
+  assert.ok(/\| ch1\.md \| 0 \| 1 \|/.test(report), `the summary table must count it as a warning, got:\n${report}`);
+});
+
+t('an untouched QUERIES.md template does not claim the publisher left queries', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  const out = apply(dir, bundle, ['--dry-run']);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(!/left \d+ quer/i.test(out.stdout), `the untouched template must not fire: ${out.stdout}`);
+});
+
+t('a QUERIES.md the publisher filled in is reported with its count', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  fs.appendFileSync(path.join(bundle, 'QUERIES.md'),
+    '- ch3.md: "the constellation" — capitalised elsewhere?\n- appA.md: two rows labelled (b)\n', 'utf8');
+
+  const out = apply(dir, bundle, ['--dry-run']);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(/left 2 queries/i.test(out.stdout), `expected the real count, got: ${out.stdout}`);
+});
+
+console.log('\n=== source inventory ===');
+
+t('accepts a content root whose files match EXPECTED_FILES', () => {
+  const dir = makeRepo();
+  assert.doesNotThrow(() => P.assertSourceInventory(dir));
+});
+
+t('refuses to package when the config and EXPECTED_FILES disagree', () => {
+  const dir = makeRepo();
+  fs.rmSync(path.join(dir, 'ch9.md'));
+  assert.throws(() => P.assertSourceInventory(dir), /disagree about which files/);
 });
 
 for (const dir of e2eDirs) fs.rmSync(dir, { recursive: true, force: true });
