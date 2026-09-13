@@ -380,5 +380,238 @@ t('does not destroy a prior change-report.md when a re-run is blocked by the bra
   }
 });
 
+console.log('\n=== end to end ===');
+
+// fs, os, path, execFileSync, and B are already imported at the top of this file;
+// only spawnSync and SCRIPTS are new here.
+const { spawnSync } = require('child_process');
+
+const SCRIPTS = path.resolve(__dirname, '..');
+
+// Explicit stdio, not execFileSync's default: without it, a git warning on stderr
+// (e.g. "re-init: ignored --initial-branch" from a stray global init.templatedir on
+// some machines) leaks straight through to this process's own stderr even on
+// success, which would make otherwise-clean test output noisy.
+const sh = (cwd, cmd, args) => execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+// Every other fixture in this file removes its own tmpdir in a finally block; these
+// 11 cases share makeRepo() instead, so track what it creates here and sweep once at
+// the end of this section rather than leaving a fresh git repo under os.tmpdir() per
+// test, per run.
+const e2eDirs = [];
+
+/** A minimal book repo: 13 sources with real constructs, committed on main. */
+function makeRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-e2e-'));
+  e2eDirs.push(dir);
+  sh(dir, 'git', ['init', '-q', '-b', 'main']);
+  sh(dir, 'git', ['config', 'user.email', 'author@test']);
+  sh(dir, 'git', ['config', 'user.name', 'Test Author']);
+
+  for (const name of B.EXPECTED_FILES) {
+    const slug = name.replace('.md', '');
+    fs.writeFileSync(path.join(dir, name), [
+      `# ${slug} title`,
+      '',
+      `First paragraph of ${slug} with a {SITE_BASE} link and a [@key1] citation.`,
+      '',
+      `![A figure for ${slug}](images/${slug}.png){#fig:${slug}}`,
+      '',
+      '::: info',
+      `A callout in ${slug}.`,
+      ':::',
+      '',
+      `Second paragraph of ${slug}, long enough to be worth re-wrapping in an editor.`,
+      '',
+    ].join('\n'), 'utf8');
+  }
+  fs.writeFileSync(path.join(dir, 'references.json'),
+    JSON.stringify([{ id: 'key1', type: 'book', title: 'A Source' }]), 'utf8');
+  fs.writeFileSync(path.join(dir, 'metadata.yaml'), 'edition: "Test Edition"\nversion: "0.0.1"\n', 'utf8');
+
+  sh(dir, 'git', ['add', '-A']);
+  sh(dir, 'git', ['commit', '-q', '-m', 'initial']);
+  return dir;
+}
+
+const pkg = (dir, label) =>
+  spawnSync('node', [path.join(SCRIPTS, 'package-for-publisher.js'), dir, '--round', label], { encoding: 'utf8' });
+
+const apply = (dir, bundle, extra = []) =>
+  spawnSync('node', [path.join(SCRIPTS, 'apply-publisher-edits.js'), bundle, '--content-dir', dir, ...extra], { encoding: 'utf8' });
+
+const bundleDirFor = (dir, label) =>
+  path.join(dir, 'publisher', label, 'outgoing', `constellize-book-${label}`);
+
+const read = (dir, name) => fs.readFileSync(path.join(dir, name), 'utf8');
+
+t('packaging refuses when a source file is dirty', () => {
+  const dir = makeRepo();
+  fs.appendFileSync(path.join(dir, 'ch1.md'), 'uncommitted\n');
+  const out = pkg(dir, 'r1');
+  assert.notStrictEqual(out.status, 0);
+  assert.ok(/uncommitted changes/i.test(out.stderr));
+});
+
+t('packaging refuses to reuse an existing round label', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const second = pkg(dir, 'r1');
+  assert.notStrictEqual(second.status, 0);
+  assert.ok(/already exists/i.test(second.stderr));
+});
+
+t('case 1: a publisher-only edit merges cleanly', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  const before = read(bundle, 'ch1.md');
+  const edited = before.replace('First paragraph', 'Opening paragraph');
+  assert.notStrictEqual(edited, before, 'the simulated edit must actually change the text');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), edited, 'utf8');
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(read(dir, 'ch1.md').includes('Opening paragraph'));
+});
+
+t('case 2: concurrent edits to different chapters both survive', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  // Publisher edits ch1 ...
+  const ch1Before = read(bundle, 'ch1.md');
+  const ch1Edited = ch1Before.replace('First paragraph', 'PUBLISHER paragraph');
+  assert.notStrictEqual(ch1Edited, ch1Before, "the publisher's simulated edit must actually change the text");
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), ch1Edited, 'utf8');
+
+  // ... while the author edits ch2 and commits.
+  const ch2Before = read(dir, 'ch2.md');
+  const ch2Edited = ch2Before.replace('First paragraph', 'AUTHOR paragraph');
+  assert.notStrictEqual(ch2Edited, ch2Before, "the author's simulated edit must actually change the text");
+  fs.writeFileSync(path.join(dir, 'ch2.md'), ch2Edited, 'utf8');
+  sh(dir, 'git', ['commit', '-q', '-am', 'author keeps working']);
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(read(dir, 'ch1.md').includes('PUBLISHER paragraph'), "publisher's edit survived");
+  assert.ok(read(dir, 'ch2.md').includes('AUTHOR paragraph'), "author's edit survived");
+});
+
+t('case 3: overlapping edits stop with conflict markers and can be undone', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('First paragraph', 'PUBLISHER version'), 'utf8');
+  fs.writeFileSync(path.join(dir, 'ch1.md'),
+    read(dir, 'ch1.md').replace('First paragraph', 'AUTHOR version'), 'utf8');
+  sh(dir, 'git', ['commit', '-q', '-am', 'author edits the same paragraph']);
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 2, 'conflicts exit with code 2');
+  assert.ok(read(dir, 'ch1.md').includes('<<<<<<<'), 'conflict markers present');
+
+  sh(dir, 'git', ['merge', '--abort']);
+  assert.ok(read(dir, 'ch1.md').includes('AUTHOR version'));
+  assert.ok(!read(dir, 'ch1.md').includes('<<<<<<<'));
+});
+
+t('case 4: a broken ::: fence blocks the merge and leaves the repo untouched', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  const headBefore = sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
+
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('::: info', '::: information'), 'utf8');
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 1, 'guard errors exit with code 1');
+  assert.strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']).trim(), headBefore, 'no commit was made');
+  assert.ok(!read(dir, 'ch1.md').includes('::: information'), 'working tree untouched');
+
+  const report = fs.readFileSync(path.join(dir, 'publisher', 'r1', 'incoming', 'guard-report.md'), 'utf8');
+  assert.ok(report.includes('fence-integrity'));
+});
+
+t('--force merges over guard errors and records it in the commit message', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('::: info', '::: information'), 'utf8');
+
+  const out = apply(dir, bundle, ['--force']);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(sh(dir, 'git', ['log', '--format=%B', '-n', '5']).includes('--force'));
+});
+
+t('--dry-run reports without touching git', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  const headBefore = sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
+
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('First paragraph', 'Opening paragraph'), 'utf8');
+
+  const out = apply(dir, bundle, ['--dry-run']);
+  assert.strictEqual(out.status, 0);
+  assert.strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']).trim(), headBefore);
+  assert.ok(!read(dir, 'ch1.md').includes('Opening paragraph'));
+});
+
+t('a re-wrapped but unedited return produces nothing to merge', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+
+  // Join every wrapped paragraph onto a single line, changing no words.
+  for (const name of B.EXPECTED_FILES) {
+    const before = read(bundle, name);
+    const text = before.replace(/^(Second paragraph[^\n]*), (long[^\n]*)$/m, '$1,\n$2');
+    assert.notStrictEqual(text, before, `${name}: the re-wrap fixture must actually insert a line break`);
+    fs.writeFileSync(path.join(bundle, name), text, 'utf8');
+  }
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(/nothing to merge/i.test(out.stdout), out.stdout);
+});
+
+t('a returned bundle missing a file is blocked by file-set', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  fs.unlinkSync(path.join(bundle, 'appB.md'));
+
+  const out = apply(dir, bundle);
+  assert.strictEqual(out.status, 1);
+  const report = fs.readFileSync(path.join(dir, 'publisher', 'r1', 'incoming', 'guard-report.md'), 'utf8');
+  assert.ok(report.includes('appB.md'));
+});
+
+t('applying a zip works the same as applying a directory', () => {
+  const dir = makeRepo();
+  assert.strictEqual(pkg(dir, 'r1').status, 0);
+  const bundle = bundleDirFor(dir, 'r1');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'),
+    read(bundle, 'ch1.md').replace('First paragraph', 'Zipped paragraph'), 'utf8');
+
+  const outgoing = path.dirname(bundle);
+  fs.rmSync(path.join(outgoing, 'constellize-book-r1.zip'), { force: true });
+  sh(outgoing, 'zip', ['-q', '-r', 'constellize-book-r1.zip', 'constellize-book-r1']);
+
+  const out = apply(dir, path.join(outgoing, 'constellize-book-r1.zip'));
+  assert.strictEqual(out.status, 0, out.stderr + out.stdout);
+  assert.ok(read(dir, 'ch1.md').includes('Zipped paragraph'));
+});
+
+for (const dir of e2eDirs) fs.rmSync(dir, { recursive: true, force: true });
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
