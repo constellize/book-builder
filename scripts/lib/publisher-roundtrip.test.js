@@ -449,7 +449,7 @@ t('packaging refuses when a source file is dirty', () => {
   const dir = makeRepo();
   fs.appendFileSync(path.join(dir, 'ch1.md'), 'uncommitted\n');
   const out = pkg(dir, 'r1');
-  assert.notStrictEqual(out.status, 0);
+  assert.strictEqual(out.status, 1);
   assert.ok(/uncommitted changes/i.test(out.stderr));
 });
 
@@ -457,7 +457,7 @@ t('packaging refuses to reuse an existing round label', () => {
   const dir = makeRepo();
   assert.strictEqual(pkg(dir, 'r1').status, 0);
   const second = pkg(dir, 'r1');
-  assert.notStrictEqual(second.status, 0);
+  assert.strictEqual(second.status, 1);
   assert.ok(/already exists/i.test(second.stderr));
 });
 
@@ -505,10 +505,15 @@ t('case 3: overlapping edits stop with conflict markers and can be undone', () =
   assert.strictEqual(pkg(dir, 'r1').status, 0);
   const bundle = bundleDirFor(dir, 'r1');
 
-  fs.writeFileSync(path.join(bundle, 'ch1.md'),
-    read(bundle, 'ch1.md').replace('First paragraph', 'PUBLISHER version'), 'utf8');
-  fs.writeFileSync(path.join(dir, 'ch1.md'),
-    read(dir, 'ch1.md').replace('First paragraph', 'AUTHOR version'), 'utf8');
+  const bundleCh1Before = read(bundle, 'ch1.md');
+  const bundleCh1Edited = bundleCh1Before.replace('First paragraph', 'PUBLISHER version');
+  assert.notStrictEqual(bundleCh1Edited, bundleCh1Before, "the publisher's simulated edit must actually change the text");
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), bundleCh1Edited, 'utf8');
+
+  const dirCh1Before = read(dir, 'ch1.md');
+  const dirCh1Edited = dirCh1Before.replace('First paragraph', 'AUTHOR version');
+  assert.notStrictEqual(dirCh1Edited, dirCh1Before, "the author's simulated edit must actually change the text");
+  fs.writeFileSync(path.join(dir, 'ch1.md'), dirCh1Edited, 'utf8');
   sh(dir, 'git', ['commit', '-q', '-am', 'author edits the same paragraph']);
 
   const out = apply(dir, bundle);
@@ -526,13 +531,25 @@ t('case 4: a broken ::: fence blocks the merge and leaves the repo untouched', (
   const bundle = bundleDirFor(dir, 'r1');
   const headBefore = sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
 
-  fs.writeFileSync(path.join(bundle, 'ch1.md'),
-    read(bundle, 'ch1.md').replace('::: info', '::: information'), 'utf8');
+  const ch1Before = read(bundle, 'ch1.md');
+  const ch1Edited = ch1Before.replace('::: info', '::: information');
+  assert.notStrictEqual(ch1Edited, ch1Before, 'the simulated fence break must actually change the text');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), ch1Edited, 'utf8');
 
   const out = apply(dir, bundle);
   assert.strictEqual(out.status, 1, 'guard errors exit with code 1');
   assert.strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']).trim(), headBefore, 'no commit was made');
   assert.ok(!read(dir, 'ch1.md').includes('::: information'), 'working tree untouched');
+
+  // A regression that created the edit branch (or wrote into the tracked tree) before
+  // running the guard would leave this repo dirty even though the process exits
+  // BLOCKED; catch that even though today's code returns before ever branching.
+  const editBranches = sh(dir, 'git', ['branch', '--list', 'publisher/*-edits']).trim();
+  assert.strictEqual(editBranches, '', 'expected no edit branch to be created when blocked by the guard');
+  // --untracked-files=no: publisher/ (this tool's own workspace) is untracked by
+  // design and must not count as dirt here.
+  assert.strictEqual(sh(dir, 'git', ['status', '--porcelain', '--untracked-files=no']).trim(), '',
+    'expected the tracked tree to be clean when blocked by the guard');
 
   const report = fs.readFileSync(path.join(dir, 'publisher', 'r1', 'incoming', 'guard-report.md'), 'utf8');
   assert.ok(report.includes('fence-integrity'));
@@ -542,12 +559,15 @@ t('--force merges over guard errors and records it in the commit message', () =>
   const dir = makeRepo();
   assert.strictEqual(pkg(dir, 'r1').status, 0);
   const bundle = bundleDirFor(dir, 'r1');
-  fs.writeFileSync(path.join(bundle, 'ch1.md'),
-    read(bundle, 'ch1.md').replace('::: info', '::: information'), 'utf8');
+  const ch1Before = read(bundle, 'ch1.md');
+  const ch1Edited = ch1Before.replace('::: info', '::: information');
+  assert.notStrictEqual(ch1Edited, ch1Before, 'the simulated fence break must actually change the text');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), ch1Edited, 'utf8');
 
   const out = apply(dir, bundle, ['--force']);
   assert.strictEqual(out.status, 0, out.stderr + out.stdout);
   assert.ok(sh(dir, 'git', ['log', '--format=%B', '-n', '5']).includes('--force'));
+  assert.ok(read(dir, 'ch1.md').includes('::: information'), 'the forced edit landed');
 });
 
 t('--dry-run reports without touching git', () => {
@@ -556,13 +576,20 @@ t('--dry-run reports without touching git', () => {
   const bundle = bundleDirFor(dir, 'r1');
   const headBefore = sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
 
-  fs.writeFileSync(path.join(bundle, 'ch1.md'),
-    read(bundle, 'ch1.md').replace('First paragraph', 'Opening paragraph'), 'utf8');
+  const ch1Before = read(bundle, 'ch1.md');
+  const ch1Edited = ch1Before.replace('First paragraph', 'Opening paragraph');
+  assert.notStrictEqual(ch1Edited, ch1Before, 'the simulated edit must actually change the text');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), ch1Edited, 'utf8');
 
   const out = apply(dir, bundle, ['--dry-run']);
   assert.strictEqual(out.status, 0);
   assert.strictEqual(sh(dir, 'git', ['rev-parse', 'HEAD']).trim(), headBefore);
   assert.ok(!read(dir, 'ch1.md').includes('Opening paragraph'));
+  // Without this, a --dry-run that is really a silent no-op (exits 0, prints nothing,
+  // runs no guard) would pass every assertion above: "the edit is absent from the
+  // working tree" is exactly what doing nothing also produces. This is what actually
+  // pins "reports" in the test's own name.
+  assert.ok(/dry run/i.test(out.stdout), `expected dry-run output to mention the dry run, got: ${out.stdout}`);
 });
 
 t('a re-wrapped but unedited return produces nothing to merge', () => {
@@ -599,14 +626,19 @@ t('applying a zip works the same as applying a directory', () => {
   const dir = makeRepo();
   assert.strictEqual(pkg(dir, 'r1').status, 0);
   const bundle = bundleDirFor(dir, 'r1');
-  fs.writeFileSync(path.join(bundle, 'ch1.md'),
-    read(bundle, 'ch1.md').replace('First paragraph', 'Zipped paragraph'), 'utf8');
+  const ch1Before = read(bundle, 'ch1.md');
+  const ch1Edited = ch1Before.replace('First paragraph', 'Zipped paragraph');
+  assert.notStrictEqual(ch1Edited, ch1Before, 'the simulated edit must actually change the text');
+  fs.writeFileSync(path.join(bundle, 'ch1.md'), ch1Edited, 'utf8');
 
   const outgoing = path.dirname(bundle);
-  fs.rmSync(path.join(outgoing, 'constellize-book-r1.zip'), { force: true });
-  sh(outgoing, 'zip', ['-q', '-r', 'constellize-book-r1.zip', 'constellize-book-r1']);
+  const zipPath = path.join(outgoing, 'constellize-book-r1.zip');
+  fs.rmSync(zipPath, { force: true });
+  // Same helper the toolchain itself uses (via package-for-publisher.js), not a
+  // hand-rolled invocation that could silently drift from what B.zipDir actually does.
+  B.zipDir(outgoing, 'constellize-book-r1', zipPath);
 
-  const out = apply(dir, path.join(outgoing, 'constellize-book-r1.zip'));
+  const out = apply(dir, zipPath);
   assert.strictEqual(out.status, 0, out.stderr + out.stdout);
   assert.ok(read(dir, 'ch1.md').includes('Zipped paragraph'));
 });
