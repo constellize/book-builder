@@ -90,11 +90,41 @@ remove none, then zip this folder back up and send it.
 `;
 }
 
-function readMetadataField(contentDir, field, fallback) {
-  const metadataPath = path.join(contentDir, 'metadata.yaml');
-  if (!fs.existsSync(metadataPath)) return fallback;
-  const m = fs.readFileSync(metadataPath, 'utf8').match(new RegExp(`^${field}:\\s*"?([^"\\n]+)"?\\s*$`, 'm'));
-  return m ? m[1].trim() : fallback;
+/**
+ * Read a metadata.yaml field as it stood at the tag, not the working tree — the
+ * same rule that governs the 13 bundle sources. metadata.yaml isn't one of those
+ * 13 files and isn't covered by the dirty check, so reading it off disk could put
+ * an uncommitted edition string into a publisher-facing README.
+ *
+ * A missing metadata.yaml (at the tag or anywhere) is not fatal — packaging still
+ * proceeds with the fallback — but every fallback path is loud about it, since a
+ * silent "unknown" in a document a publisher sees is worse than a warning.
+ */
+function readMetadataField(contentDir, tag, field, fallback) {
+  let text = null;
+  try {
+    text = execFileSync('git', ['show', `${tag}:metadata.yaml`], { cwd: contentDir, encoding: 'utf8' });
+  } catch (err) {
+    const metadataPath = path.join(contentDir, 'metadata.yaml');
+    if (fs.existsSync(metadataPath)) {
+      console.warn(chalk.yellow(
+        `metadata.yaml is not committed at ${tag}; README ${field} comes from the working tree instead of the tag.`
+      ));
+      text = fs.readFileSync(metadataPath, 'utf8');
+    }
+  }
+  if (text === null) {
+    console.warn(chalk.yellow(
+      `metadata.yaml was not found at ${tag} or in the working tree; README ${field} will read "${fallback}".`
+    ));
+    return fallback;
+  }
+  const m = text.match(new RegExp(`^${field}:\\s*"?([^"\\n]+)"?\\s*$`, 'm'));
+  if (!m) {
+    console.warn(chalk.yellow(`metadata.yaml has no "${field}:" field; README ${field} will read "${fallback}".`));
+    return fallback;
+  }
+  return m[1].trim();
 }
 
 function main() {
@@ -138,43 +168,60 @@ function main() {
   }
 
   git(contentDir, ['tag', tag]);
-  const commit = git(contentDir, ['rev-parse', tag + '^{commit}']);
-  const date = new Date().toISOString().slice(0, 10);
-  console.log(chalk.blue(`Packaging ${label} at ${commit.slice(0, 8)}`));
 
-  const bundleName = `constellize-book-${label}`;
-  const outgoingDir = path.join(contentDir, 'publisher', label, 'outgoing');
-  const bundleDir = path.join(outgoingDir, bundleName);
-  fs.removeSync(bundleDir);
-  fs.ensureDirSync(bundleDir);
+  // Everything from here on is risky I/O (git show, filesystem writes, zip). If any
+  // of it throws, the tag we just created must not survive — a dangling tag makes a
+  // retry with the same --round label fail with a "would corrupt its merge" message
+  // that is actively misleading, since nothing was ever sent out. Roll the tag back
+  // and re-throw the *original* error so the top-level handler reports what actually
+  // went wrong, not a cleanup artifact.
+  try {
+    const commit = git(contentDir, ['rev-parse', tag + '^{commit}']);
+    const date = new Date().toISOString().slice(0, 10);
+    console.log(chalk.blue(`Packaging ${label} at ${commit.slice(0, 8)}`));
 
-  const files = [];
-  for (const name of B.EXPECTED_FILES) {
-    const content = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
-    fs.writeFileSync(path.join(bundleDir, name), content, 'utf8');
-    files.push({ name, sha256: B.sha256(content) });
-    console.log(chalk.gray(`  + ${name}`));
+    const bundleName = `constellize-book-${label}`;
+    const outgoingDir = path.join(contentDir, 'publisher', label, 'outgoing');
+    const bundleDir = path.join(outgoingDir, bundleName);
+    fs.removeSync(bundleDir);
+    fs.ensureDirSync(bundleDir);
+
+    const files = [];
+    for (const name of B.EXPECTED_FILES) {
+      const content = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
+      fs.writeFileSync(path.join(bundleDir, name), content, 'utf8');
+      files.push({ name, sha256: B.sha256(content) });
+      console.log(chalk.gray(`  + ${name}`));
+    }
+
+    fs.writeFileSync(path.join(bundleDir, 'MANIFEST.TXT'),
+      B.renderManifest({ label, tag, commit, date, files }), 'utf8');
+    fs.writeFileSync(path.join(bundleDir, 'README.md'),
+      buildReadme({
+        label, date,
+        edition: readMetadataField(contentDir, tag, 'edition', 'unknown'),
+        version: readMetadataField(contentDir, tag, 'version', 'unknown'),
+      }), 'utf8');
+    fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'),
+      `# Queries — ${label}\n\nList anything you want the author to answer or decide.\nOne query per bullet, with the file and a quoted phrase so it can be found.\n\n- \n`, 'utf8');
+
+    const zipPath = path.join(outgoingDir, `${bundleName}.zip`);
+    fs.removeSync(zipPath);
+    B.zipDir(outgoingDir, bundleName, zipPath);
+
+    console.log(chalk.green('\nPackage ready'));
+    console.log(chalk.gray(`  zip: ${zipPath}`));
+    console.log(chalk.gray(`  tag: ${tag} -> ${commit}`));
+    console.log(chalk.gray(`\nThe tag is the merge anchor. Push it so it is not lost:  git push origin ${tag}`));
+  } catch (err) {
+    try {
+      git(contentDir, ['tag', '-d', tag]);
+    } catch (cleanupErr) {
+      err.message += `\n\nAdditionally, failed to remove tag ${tag} during cleanup: ${cleanupErr.message}` +
+        `\nRemove it manually before retrying: git tag -d ${tag}`;
+    }
+    throw err;
   }
-
-  fs.writeFileSync(path.join(bundleDir, 'MANIFEST.TXT'),
-    B.renderManifest({ label, tag, commit, date, files }), 'utf8');
-  fs.writeFileSync(path.join(bundleDir, 'README.md'),
-    buildReadme({
-      label, date,
-      edition: readMetadataField(contentDir, 'edition', 'unknown'),
-      version: readMetadataField(contentDir, 'version', 'unknown'),
-    }), 'utf8');
-  fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'),
-    `# Queries — ${label}\n\nList anything you want the author to answer or decide.\nOne query per bullet, with the file and a quoted phrase so it can be found.\n\n- \n`, 'utf8');
-
-  const zipPath = path.join(outgoingDir, `${bundleName}.zip`);
-  fs.removeSync(zipPath);
-  B.zipDir(outgoingDir, bundleName, zipPath);
-
-  console.log(chalk.green('\nPackage ready'));
-  console.log(chalk.gray(`  zip: ${zipPath}`));
-  console.log(chalk.gray(`  tag: ${tag} -> ${commit}`));
-  console.log(chalk.gray(`\nThe tag is the merge anchor. Push it so it is not lost:  git push origin ${tag}`));
 }
 
 if (require.main === module) {

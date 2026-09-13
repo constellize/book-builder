@@ -3,7 +3,12 @@
  * Run with:  node scripts/lib/publisher-roundtrip.test.js
  */
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
 const P = require('../package-for-publisher.js');
+const B = require('./publisher-bundle.js');
 
 let n = 0, f = 0;
 const t = (name, fn) => { n++; try { fn(); console.log('  [ OK ] ' + name); } catch (e) { f++; console.log('  [FAIL] ' + name + ' -- ' + e.message); } };
@@ -30,6 +35,10 @@ t('ignores non-numeric rounds when picking the default', () => {
   assert.strictEqual(P.resolveLabel(undefined, ['publisher/copy-edit-pass']), 'round-1');
 });
 
+t('throws when a label sanitizes to nothing', () => {
+  assert.throws(() => P.resolveLabel('!!!', []), /no usable characters/);
+});
+
 console.log('\n=== readme ===');
 
 t('names the round and lists the do-not-touch constructs', () => {
@@ -41,6 +50,48 @@ t('names the round and lists the do-not-touch constructs', () => {
   }
   assert.ok(/do not re-?wrap|do not reflow/i.test(md), 'README must ask them not to re-wrap');
   assert.ok(md.includes('QUERIES.md'), 'README must point at QUERIES.md');
+});
+
+console.log('\n=== rollback on failure ===');
+
+t('deletes the tag it created when a source file is missing at the tag', () => {
+  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-rollback-'));
+  const run = (args) => execFileSync('git', args, { cwd: tmpRepo, encoding: 'utf8' });
+
+  try {
+    run(['init', '-q']);
+    run(['config', 'user.email', 'test@example.com']);
+    run(['config', 'user.name', 'Test']);
+
+    // Commit all 13 expected sources except one, so the `git show` loop inside
+    // package-for-publisher.js throws partway through -- after the tag already exists.
+    for (const name of B.EXPECTED_FILES) {
+      if (name === 'ch9.md') continue; // deliberately missing
+      fs.writeFileSync(path.join(tmpRepo, name), `# ${name}\n`, 'utf8');
+    }
+    run(['add', '.']);
+    run(['commit', '-q', '-m', 'initial']);
+
+    const cliPath = path.join(__dirname, '..', 'package-for-publisher.js');
+    let failed = false;
+    try {
+      // Explicit stdio (rather than relying on execFileSync's default) fully captures
+      // the child's stdout/stderr instead of also echoing stderr to this process's own
+      // stderr, which would otherwise spam "fatal: ..." noise into the test output.
+      execFileSync(process.execPath, [cliPath, tmpRepo, '--round', 'rollback-test'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      failed = true;
+    }
+    assert.ok(failed, 'expected the CLI to exit non-zero when a source file is missing at the tag');
+
+    const tags = run(['tag', '-l', 'publisher/*']).trim();
+    assert.strictEqual(tags, '', 'expected no publisher/* tag left behind after a failed package run');
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${n - f}/${n} passed`);
