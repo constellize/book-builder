@@ -59,5 +59,77 @@ t('flags invalid UTF-8 instead of producing mojibake', () => {
   assert.strictEqual(notes.invalidUtf8, true);
 });
 
+console.log('\n=== de-wrap ===');
+
+t('restores original line breaks for an unchanged but re-wrapped paragraph', () => {
+  const before = 'One two three\nfour five six.\n';
+  const after = 'One two three four five six.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, before);
+  assert.strictEqual(out.dewrapped, 1);
+});
+
+t('leaves an edited paragraph in the publisher form', () => {
+  const before = 'One two three\nfour five six.\n';
+  const after = 'One two three four five seven.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, after);
+  assert.strictEqual(out.dewrapped, 0);
+});
+
+t('de-wraps the unchanged paragraph and keeps the edited one', () => {
+  const before = 'Alpha one\ntwo.\n\nBeta one\ntwo.\n';
+  const after = 'Alpha one two.\n\nBeta one two THREE.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, 'Alpha one\ntwo.\n\nBeta one two THREE.\n');
+  assert.strictEqual(out.dewrapped, 1);
+});
+
+t('never touches fenced code', () => {
+  const before = '```\na\nb\n```\n';
+  const after = '```\na b\n```\n';
+  assert.strictEqual(B.dewrapParagraphs(before, after).text, after);
+});
+
+t('never touches list items', () => {
+  const before = '- one\n  two\n';
+  const after = '- one two\n';
+  assert.strictEqual(B.dewrapParagraphs(before, after).text, after);
+});
+
+t('never touches table rows', () => {
+  const before = '| a |\n| b |\n';
+  const after = '| a | b |\n';
+  assert.strictEqual(B.dewrapParagraphs(before, after).text, after);
+});
+
+t('never touches paragraphs inside ::: divs', () => {
+  const before = '::: info\nOne two\nthree.\n:::\n';
+  const after = '::: info\nOne two three.\n:::\n';
+  assert.strictEqual(B.dewrapParagraphs(before, after).text, after);
+});
+
+t('skips a paragraph that appears more than once in the snapshot', () => {
+  const before = 'Same\ntext.\n\nMiddle.\n\nSame\ntext.\n';
+  const after = 'Same text.\n\nMiddle.\n\nSame text.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, after, 'ambiguous matches are left alone');
+  assert.strictEqual(out.dewrapped, 0);
+});
+
+t('skips an inserted paragraph with no counterpart', () => {
+  const before = 'Alpha one\ntwo.\n';
+  const after = 'Brand new paragraph.\n\nAlpha one two.\n';
+  const out = B.dewrapParagraphs(before, after);
+  assert.strictEqual(out.text, 'Brand new paragraph.\n\nAlpha one\ntwo.\n');
+  assert.strictEqual(out.dewrapped, 1);
+});
+
+t('skips indented paragraphs', () => {
+  const before = '  One two\n  three.\n';
+  const after = '  One two three.\n';
+  assert.strictEqual(B.dewrapParagraphs(before, after).dewrapped, 0);
+});
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
