@@ -1,0 +1,284 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * Apply a publisher's returned markdown back onto the source of truth.
+ *
+ * The merge is git's, not ours: their edits are committed on a branch rooted at the
+ * round's tag, then merged into the current branch with --no-ff. That is what lets
+ * the author keep working while the publisher has the files, and what turns an
+ * overlap into a visible conflict instead of a silent overwrite.
+ */
+
+const fs = require('fs-extra');
+const os = require('os');
+const path = require('path');
+const chalk = require('chalk');
+const { execFileSync } = require('child_process');
+const { program } = require('commander');
+
+const B = require('./lib/publisher-bundle.js');
+const G = require('./lib/publisher-guard.js');
+
+const EXIT = { OK: 0, BLOCKED: 1, CONFLICTS: 2 };
+
+const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+function gitAllowFail(cwd, args) {
+  try {
+    return { ok: true, out: execFileSync('git', args, { cwd, encoding: 'utf8' }) };
+  } catch (err) {
+    return { ok: false, out: (err.stdout || '') + (err.stderr || '') };
+  }
+}
+
+/** Locate the directory holding MANIFEST.TXT, whether the bundle nests or not. */
+function findBundleRoot(dir) {
+  if (fs.existsSync(path.join(dir, 'MANIFEST.TXT'))) return dir;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const nested = path.join(dir, entry.name);
+    if (fs.existsSync(path.join(nested, 'MANIFEST.TXT'))) return nested;
+  }
+  return dir;
+}
+
+function loadReferenceKeys(contentDir) {
+  const refPath = path.join(contentDir, 'references.json');
+  if (!fs.existsSync(refPath)) return null;
+  try {
+    return new Set(JSON.parse(fs.readFileSync(refPath, 'utf8')).map((r) => r.id));
+  } catch (err) {
+    console.log(chalk.yellow(`  references.json could not be parsed (${err.message}); skipping citation resolution`));
+    return null;
+  }
+}
+
+function main() {
+  program
+    .name('apply-publisher-edits')
+    .argument('<bundle>', 'returned zip or unpacked directory, as the publisher sent it')
+    .option('--content-dir <dir>', 'book content root', '.')
+    .option('--round <label>', 'round label, when MANIFEST.TXT is missing or unreadable')
+    .option('--author <author>', 'git author for the publisher commit', 'Publisher <publisher@localhost>')
+    .option('--dry-run', 'normalize and run the guard, then stop without touching git')
+    .option('--force', 'merge even when the guard reports errors')
+    .option('--no-dewrap', 'do not restore line breaks for re-wrapped paragraphs')
+    .parse();
+
+  const opts = program.opts();
+  const contentDir = path.resolve(opts.contentDir);
+  const bundleArg = path.resolve(program.args[0]);
+
+  B.assertArchiveTools();
+  if (!fs.existsSync(bundleArg)) throw new Error(`No such bundle: ${bundleArg}`);
+
+  try {
+    git(contentDir, ['rev-parse', '--is-inside-work-tree']);
+  } catch (err) {
+    throw new Error(`${contentDir} is not inside a git repository`);
+  }
+
+  // Branch switching needs a clean tree. Submodule pointer changes are excluded:
+  // book-builder is a submodule and is routinely modified alongside this work.
+  const dirty = git(contentDir, ['status', '--porcelain', '--ignore-submodules=all']);
+  if (dirty && !opts.dryRun) {
+    throw new Error('Working tree has uncommitted changes:\n' + dirty + '\n\nCommit or stash them first.');
+  }
+
+  // Unpack into a scratch dir so the publisher's original download is never modified.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'publisher-apply-'));
+  let unpacked;
+  if (fs.statSync(bundleArg).isDirectory()) {
+    unpacked = path.join(scratch, 'bundle');
+    fs.copySync(bundleArg, unpacked);
+  } else {
+    unpacked = path.join(scratch, 'bundle');
+    fs.ensureDirSync(unpacked);
+    B.unzipTo(bundleArg, unpacked);
+  }
+  const bundleRoot = findBundleRoot(unpacked);
+
+  let manifest = null;
+  const manifestPath = path.join(bundleRoot, 'MANIFEST.TXT');
+  if (fs.existsSync(manifestPath)) {
+    try {
+      manifest = B.parseManifest(fs.readFileSync(manifestPath, 'utf8'));
+    } catch (err) {
+      console.log(chalk.yellow(`  MANIFEST.TXT is malformed: ${err.message}`));
+    }
+  }
+
+  const label = manifest ? manifest.label : opts.round;
+  if (!label) {
+    throw new Error('MANIFEST.TXT is missing or malformed. Re-run with --round <label> to name the round explicitly.');
+  }
+  const tag = `publisher/${label}`;
+
+  try {
+    git(contentDir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]);
+  } catch (err) {
+    throw new Error(`Tag ${tag} does not exist in this repository. It is the merge anchor for this round and cannot be reconstructed.`);
+  }
+  if (manifest) {
+    const tagged = git(contentDir, ['rev-parse', `${tag}^{commit}`]);
+    if (tagged !== manifest.commit) {
+      throw new Error(`Tag ${tag} points at ${tagged} but MANIFEST.TXT records ${manifest.commit}. The tag has moved; refusing to merge against the wrong snapshot.`);
+    }
+  }
+
+  const workspace = path.join(contentDir, 'publisher', label, 'incoming');
+  fs.removeSync(workspace);
+  fs.ensureDirSync(workspace);
+
+  // --- Normalize -----------------------------------------------------------
+  console.log(chalk.blue(`Applying ${label} (anchor ${tag})`));
+
+  const snapshot = {};
+  for (const name of B.EXPECTED_FILES) {
+    snapshot[name] = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
+  }
+
+  // Prove the manifest describes THIS tag's content. The hashes were taken from the
+  // same `git show` output at pack time, so a mismatch means the manifest and the tag
+  // disagree about what was sent — merging against that snapshot would be merging
+  // against the wrong base. Returned files are expected to differ and are not checked
+  // here; this compares the manifest to the snapshot only.
+  if (manifest) {
+    const problems = B.verifyManifest(manifest, snapshot);
+    if (problems.length) {
+      throw new Error(
+        'MANIFEST.TXT does not describe the content at ' + tag + ':\n  ' +
+        problems.join('\n  ') +
+        '\n\nRefusing to merge against a snapshot the manifest does not match.'
+      );
+    }
+  }
+
+  const present = fs.readdirSync(bundleRoot).filter((f) => f.endsWith('.md') || f === 'MANIFEST.TXT');
+  const findings = G.checkFileSet(B.EXPECTED_FILES, present.filter((f) => f !== 'MANIFEST.TXT'));
+
+  const refKeys = loadReferenceKeys(contentDir);
+  const normalized = {};
+
+  for (const name of B.EXPECTED_FILES) {
+    const source = path.join(bundleRoot, name);
+    if (!fs.existsSync(source)) continue; // already reported by checkFileSet
+    const { text, notes } = B.readAndNormalize(source);
+    let finalText = text;
+    if (!notes.invalidUtf8 && opts.dewrap !== false) {
+      const out = B.dewrapParagraphs(snapshot[name], text);
+      finalText = out.text;
+      if (out.dewrapped) console.log(chalk.gray(`  ${name}: restored line breaks on ${out.dewrapped} re-wrapped paragraph(s)`));
+    }
+    normalized[name] = finalText;
+    fs.writeFileSync(path.join(workspace, name), finalText, 'utf8');
+    findings.push(...G.compareFiles({
+      name, snapshotText: snapshot[name], returnedText: finalText, notes, refKeys,
+    }));
+  }
+
+  for (const meta of ['QUERIES.md', 'README.md']) {
+    const source = path.join(bundleRoot, meta);
+    if (fs.existsSync(source)) fs.copySync(source, path.join(workspace, meta));
+  }
+
+  const reportPath = path.join(workspace, 'guard-report.md');
+  fs.writeFileSync(reportPath, G.renderReport(findings), 'utf8');
+
+  const errors = findings.filter((x) => x.severity === 'error');
+  const warnings = findings.filter((x) => x.severity === 'warning');
+  console.log(chalk.gray(`  guard: ${errors.length} error(s), ${warnings.length} warning(s) -> ${reportPath}`));
+
+  const queriesPath = path.join(workspace, 'QUERIES.md');
+  if (fs.existsSync(queriesPath) && fs.readFileSync(queriesPath, 'utf8').trim().split('\n').length > 4) {
+    console.log(chalk.yellow(`  The publisher left queries: ${queriesPath}`));
+  }
+
+  if (opts.dryRun) {
+    console.log(chalk.blue('\nDry run: git was not touched.'));
+    console.log(G.renderReport(findings));
+    return errors.length ? EXIT.BLOCKED : EXIT.OK;
+  }
+
+  if (errors.length && !opts.force) {
+    console.error(chalk.red(`\nBlocked: ${errors.length} structural error(s). Nothing has been merged.`));
+    console.error(chalk.gray(`Read ${reportPath}, then either fix the returned files or re-run with --force.`));
+    return EXIT.BLOCKED;
+  }
+
+  // --- Merge ---------------------------------------------------------------
+  const originalBranch = git(contentDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const editBranch = `${tag}-edits`;
+
+  // A previous apply for this round may have left the branch behind. Reusing it would
+  // root the publisher's commit on the last attempt instead of on the tag, which is a
+  // different and wrong merge base.
+  const branchExists = gitAllowFail(contentDir, ['rev-parse', '-q', '--verify', `refs/heads/${editBranch}`]).ok;
+  if (branchExists) {
+    throw new Error(
+      `Branch ${editBranch} already exists from an earlier apply of this round.\n` +
+      `Delete it with:  git branch -D ${editBranch}\n` +
+      'Check first that nothing on it is unmerged.'
+    );
+  }
+
+  git(contentDir, ['checkout', '-q', '-b', editBranch, tag]);
+  try {
+    for (const [name, text] of Object.entries(normalized)) {
+      fs.writeFileSync(path.join(contentDir, name), text, 'utf8');
+    }
+    git(contentDir, ['add', '--'].concat(Object.keys(normalized)));
+
+    const staged = git(contentDir, ['diff', '--cached', '--name-only']);
+    if (!staged) {
+      console.log(chalk.yellow('The returned files are identical to the snapshot. Nothing to merge.'));
+      git(contentDir, ['checkout', '-q', originalBranch]);
+      git(contentDir, ['branch', '-q', '-D', editBranch]);
+      return EXIT.OK;
+    }
+
+    const message = `Publisher edits: ${label}` + (opts.force && errors.length
+      ? `\n\nApplied with --force over ${errors.length} guard error(s); see publisher/${label}/incoming/guard-report.md`
+      : '');
+    git(contentDir, ['commit', '-q', '--author', opts.author, '-m', message]);
+  } catch (err) {
+    git(contentDir, ['checkout', '-q', '--force', originalBranch]);
+    throw err;
+  }
+
+  git(contentDir, ['checkout', '-q', originalBranch]);
+  const merge = gitAllowFail(contentDir, ['merge', '--no-ff', '-m', `Merge publisher edits: ${label}`, editBranch]);
+
+  const diff = execFileSync('git', ['diff', `${tag}...${editBranch}`], { cwd: contentDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const stat = git(contentDir, ['diff', '--stat', `${tag}...${editBranch}`]);
+  fs.writeFileSync(path.join(workspace, 'change-report.md'),
+    `# Publisher changes — ${label}\n\n\`\`\`\n${stat}\n\`\`\`\n\n## Full diff\n\n\`\`\`diff\n${diff}\n\`\`\`\n`, 'utf8');
+
+  if (!merge.ok) {
+    const conflicted = git(contentDir, ['diff', '--name-only', '--diff-filter=U']);
+    console.log(chalk.yellow('\nMerge stopped on conflicts. This is expected when both sides edited the same paragraph.'));
+    console.log(chalk.yellow('Conflicted files:\n' + conflicted));
+    console.log(chalk.gray('\nResolve them, then:  git add <files> && git commit'));
+    console.log(chalk.gray(`To abandon the merge:  git merge --abort`));
+    return EXIT.CONFLICTS;
+  }
+
+  console.log(chalk.green(`\nMerged cleanly into ${originalBranch}.`));
+  console.log(chalk.gray(`  changes:  ${path.join(workspace, 'change-report.md')}`));
+  console.log(chalk.gray(`  guard:    ${reportPath}`));
+  console.log(chalk.gray('\nNext:  make book-validate  ->  npm run build:docx  ->  visual pass on the render'));
+  console.log(chalk.gray(`To undo this merge:  git reset --hard ORIG_HEAD`));
+  return EXIT.OK;
+}
+
+if (require.main === module) {
+  try {
+    process.exit(main());
+  } catch (err) {
+    console.error(chalk.red(`Apply failed: ${err.message}`));
+    process.exit(EXIT.BLOCKED);
+  }
+}
+
+module.exports = { EXIT, findBundleRoot };

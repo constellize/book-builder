@@ -94,5 +94,12 @@ t('deletes the tag it created when a source file is missing at the tag', () => {
   }
 });
 
+console.log('\n=== apply CLI loads ===');
+
+t('apply-publisher-edits exposes its exit codes', () => {
+  const A = require('../apply-publisher-edits.js');
+  assert.deepStrictEqual(A.EXIT, { OK: 0, BLOCKED: 1, CONFLICTS: 2 });
+});
+
 console.log(`\n${n - f}/${n} passed`);
 process.exit(f === 0 ? 0 : 1);
