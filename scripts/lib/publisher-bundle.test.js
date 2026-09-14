@@ -196,6 +196,28 @@ t('renders a template that names the round', () => {
   assert.ok(B.renderQueries('copy-edit-pass').includes('copy-edit-pass'));
 });
 
+t('the template shows a worked example of the format it asks for', () => {
+  const text = B.renderQueries('round-1');
+  const example = text.split('\n').find((l) => l.startsWith('- ') && l.trim() !== '-');
+  assert.ok(example, 'template must contain a filled-in example bullet');
+  assert.ok(/\.md/.test(example), 'the example must name a file');
+  assert.ok(/"/.test(example), 'the example must quote a phrase');
+});
+
+t('the worked example does not itself count as a query', () => {
+  // Regression guard: the example is a filled-in bullet, so unless it is treated as
+  // boilerplate every untouched round reports "the publisher left 1 query" - exactly
+  // the false signal the zero-count test above exists to prevent.
+  const text = B.renderQueries('round-1');
+  assert.ok(text.includes('ch3.md'), 'sanity: the example is present');
+  assert.strictEqual(B.countQueries(text), 0);
+});
+
+t('counts a real query even when the example is left in place', () => {
+  const text = B.renderQueries('round-1') + '- ch7.md: is "memory bank" two words throughout?\n';
+  assert.strictEqual(B.countQueries(text), 1);
+});
+
 console.log('\n=== manifest ===');
 
 const MANIFEST_INPUT = {

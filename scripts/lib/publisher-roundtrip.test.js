@@ -49,7 +49,9 @@ t('names the round and lists the do-not-touch constructs', () => {
   for (const construct of ['{SITE_BASE}', '{{', '{#fig:', '[@', ':::']) {
     assert.ok(md.includes(construct), `README must mention ${construct}`);
   }
-  assert.ok(/do not re-?wrap|do not reflow/i.test(md), 'README must ask them not to re-wrap');
+  assert.ok(/single line/i.test(md), 'README must ask for one line per paragraph');
+  assert.ok(/80 characters/.test(md), 'README must name the habit that causes it');
+  assert.ok(!/reflow/i.test(md), 'avoid "reflow" - it means something else in typesetting');
   assert.ok(md.includes('QUERIES.md'), 'README must point at QUERIES.md');
 });
 

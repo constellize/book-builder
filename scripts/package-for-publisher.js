@@ -134,9 +134,14 @@ usually fails silently — the book builds, and the affected element is simply m
 
 ## Two requests
 
-**Please do not re-wrap or reflow paragraphs.** Line breaks inside a paragraph carry
-no meaning in the finished book, but re-wrapping turns a reviewable list of your
-edits into a whole-file rewrite, which makes your work much harder to see.
+**Please leave each paragraph as a single line.** Every paragraph here is written as
+one long line, however far it runs. Many editors break long lines at 80 characters
+automatically on save — if yours does, please turn that off for these files.
+
+It makes no difference to the printed book. It makes a large difference to me: a
+paragraph whose line breaks moved reads as "deleted and rewritten" even when not a
+word changed, so a short, readable list of your changes becomes a whole-file rewrite
+and your actual work gets lost in it.
 
 **Please raise questions in \`QUERIES.md\`** rather than as notes inside the chapters.
 Anything written into the chapter files is treated as book text.

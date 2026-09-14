@@ -163,13 +163,23 @@ function sha256(text) {
  * below has to recognise it: the apply step warns "the publisher left queries", and a
  * warning that also fires on the untouched template we shipped is not a signal.
  */
+/**
+ * Every line here must be a complete line of the rendered template, because
+ * countQueries matches them whole. A worked example is included: editors follow an
+ * example far more reliably than an instruction, and a bare `- ` leaves them to guess
+ * what "name the file and quote a phrase" is supposed to look like. The example is
+ * boilerplate too, so leaving it in place does not read as a query.
+ */
 const QUERIES_BOILERPLATE = Object.freeze([
   'List anything you want the author to answer or decide.',
-  'One query per bullet, with the file and a quoted phrase so it can be found.',
+  'One query per bullet: name the file and quote a phrase so it can be found, like this:',
+  '- ch3.md — "constellation of existing, trusted components": is this defined before here?',
+  'Replace that example with your own, or delete it if you have no queries.',
 ]);
 
 function renderQueries(label) {
-  return `# Queries — ${label}\n\n${QUERIES_BOILERPLATE.join('\n')}\n\n- \n`;
+  const [intro, howTo, example, closing] = QUERIES_BOILERPLATE;
+  return `# Queries — ${label}\n\n${intro}\n${howTo}\n\n${example}\n\n${closing}\n\n- \n`;
 }
 
 /**
