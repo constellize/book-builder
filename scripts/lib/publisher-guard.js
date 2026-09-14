@@ -21,6 +21,14 @@ const KIND = Object.freeze({
   TEXT: 'text',
 });
 
+/**
+ * An otherwise-valid ATX heading carrying leading whitespace. Whether pandoc turns it
+ * into an indented code block or swallows it into a list as plain text depends on what
+ * precedes it; either way the heading is destroyed. See tokenize() for where this is
+ * applied and what it deliberately excludes.
+ */
+const INDENTED_HEADING_RE = /^[ \t]{1,}#{1,6}\s/;
+
 function nextNonBlank(raw, from) {
   for (let i = from; i < raw.length; i++) {
     if (raw[i].trim() !== '') return raw[i];
@@ -46,6 +54,10 @@ function tokenize(text) {
   for (let i = 0; i < raw.length; i++) {
     const line = raw[i];
     const trimmed = line.trim();
+    // Captured before the fence branch below toggles it: what matters for
+    // indentedHeading is whether this line sits INSIDE a ``` block, not what the flag
+    // becomes after a fence line has been counted.
+    const insideFence = inCode;
     let kind;
 
     if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
@@ -87,7 +99,23 @@ function tokenize(text) {
       kind = KIND.TEXT;
     }
 
-    lines.push({ n: i + 1, raw: line, kind, divDepth });
+    // A heading-shaped line that pandoc will no longer render as a heading. This is a
+    // FLAG rather than a kind, because the classification above cannot express it: the
+    // same mutation lands in a different branch depending on context, and destroys the
+    // heading either way. Four or more leading spaces after a paragraph becomes an
+    // indented code block; the identical line after a bulleted list is swallowed into
+    // the list as plain text (verified against pandoc 3.8.3: `<p>### Heading</p>`
+    // inside the `<li>`, no `<h3>` anywhere). Seven headings in the real manuscript sit
+    // in that second position, so keying detection off KIND.CODE missed all of them.
+    //
+    // Lines inside a ``` block are excluded: that is where the 57 `#` comments in the
+    // shell and Python samples live. A heading pandoc still renders -- zero to three
+    // leading spaces, already classified HEADING above -- is not a loss and is excluded
+    // too.
+    const indentedHeading =
+      !insideFence && kind !== KIND.HEADING && INDENTED_HEADING_RE.test(line);
+
+    lines.push({ n: i + 1, raw: line, kind, divDepth, indentedHeading });
   }
 
   return { lines };
@@ -99,13 +127,6 @@ const ATTR_BLOCK_RE = /\{[#.][^}\n]*\}/g;
 const IMAGE_RE = /!\[[^\]\n]*\]\(([^)\s]+)/g;
 const BRACKET_SPAN_RE = /\[[^\]\n]*\]/g;
 const CITE_KEY_RE = /@([A-Za-z0-9_][\w:.#$%&+?<>~/-]*)/g;
-
-/**
- * A heading that has been pushed to column 4 or beyond. Pandoc renders it as an
- * indented code block, so the heading silently disappears from the finished book --
- * the same class of silent destruction as an indented ::: fence.
- */
-const INDENTED_HEADING_RE = /^[ \t]{1,}#{1,6}\s/;
 
 /**
  * Counters map token -> the 1-based line numbers it was found on. The length is the
@@ -150,6 +171,11 @@ function fingerprint(text) {
   const rstrip = (s) => s.replace(/\s+$/, '');
 
   for (const line of lines) {
+    // Read before the kind dispatch: an indented heading lands in KIND.CODE after a
+    // paragraph but in KIND.LIST after a bulleted list, and the early `continue`s below
+    // would skip whichever branch it did not land in.
+    if (line.indentedHeading) bump(fp.indentedHeadings, [rstrip(line.raw)], line.n);
+
     if (line.kind === KIND.CODE_FENCE) {
       fp.codeFences.push({ text: rstrip(line.raw), n: line.n });
       if (currentBlock === null) {
@@ -162,14 +188,7 @@ function fingerprint(text) {
     }
 
     if (line.kind === KIND.CODE) {
-      if (currentBlock !== null) {
-        currentBlock.push(line.raw);
-      } else if (INDENTED_HEADING_RE.test(line.raw)) {
-        // An indented-code line that is otherwise a valid ATX heading, and not inside a
-        // ``` block. `# comment` lines in shell samples are inside a fence and so never
-        // reach here.
-        bump(fp.indentedHeadings, [rstrip(line.raw)], line.n);
-      }
+      if (currentBlock !== null) currentBlock.push(line.raw);
       continue; // indented code is excluded from every token scan
     }
 
@@ -247,11 +266,17 @@ function counterDiff(before, after) {
 // Enough to find the token by eye, not an exhaustive dump of a 40 KB chapter.
 const MAX_LINES_SHOWN = 6;
 
+/**
+ * Deduplicate for DISPLAY only, never in the counters themselves: two `{SITE_BASE}` on
+ * one line is legitimately a count of two, but rendering that as "lines 7, 7" tells the
+ * reader nothing and looks like a bug.
+ */
 function atLines(numbers) {
-  if (!numbers.length) return '';
-  const shown = numbers.slice(0, MAX_LINES_SHOWN).join(', ');
-  const more = numbers.length > MAX_LINES_SHOWN ? `, …+${numbers.length - MAX_LINES_SHOWN} more` : '';
-  return `line${numbers.length === 1 ? '' : 's'} ${shown}${more}`;
+  const unique = [...new Set(numbers)];
+  if (!unique.length) return '';
+  const shown = unique.slice(0, MAX_LINES_SHOWN).join(', ');
+  const more = unique.length > MAX_LINES_SHOWN ? `, …+${unique.length - MAX_LINES_SHOWN} more` : '';
+  return `line${unique.length === 1 ? '' : 's'} ${shown}${more}`;
 }
 
 function describeCounterDiff(diff) {
@@ -379,14 +404,17 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
   const indentedHeadings = counterDiff(before.indentedHeadings, after.indentedHeadings)
     .filter(({ from, to }) => to.length > from.length);
   if (indentedHeadings.length) {
-    // Error, not the heading-structure warning it would otherwise raise: four spaces of
-    // indentation turns an ATX heading into an indented code block, so the heading is
-    // gone from the finished book and its text ships as a monospaced literal. That is
-    // destruction, not the conscious restructuring the warning exists for.
+    // Error, not the heading-structure warning it would otherwise raise. Indenting an
+    // ATX heading removes it from the finished book -- as a monospaced code block after
+    // a paragraph, as plain body text inside the preceding list item after a list. That
+    // is destruction, not the conscious restructuring the warning exists for.
     add('heading-structure',
-      `heading(s) indented into a code block: ${describeCounterDiff(indentedHeadings)}`,
-      'Four or more leading spaces makes pandoc read the line as indented code, not a heading.\n' +
-      indentedHeadings.map(({ token, to }) => `line ${to[to.length - 1]}: ${token}`).join('\n'),
+      `indented heading(s) that no longer render as headings: ${describeCounterDiff(indentedHeadings)}`,
+      'Leading whitespace stops pandoc reading these as headings — after a paragraph the line\n' +
+      'becomes an indented code block, after a list it is swallowed into the list as plain text.\n' +
+      // Every affected line, not just the last: the same heading text can be indented on
+      // more than one line, and naming only one of them sends the author to the wrong place.
+      indentedHeadings.map(({ token, to }) => `${atLines(to)}: ${token}`).join('\n'),
       'error');
   }
 

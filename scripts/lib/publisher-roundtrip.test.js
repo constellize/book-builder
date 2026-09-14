@@ -111,6 +111,19 @@ t('apply-publisher-edits exposes its exit codes', () => {
   assert.deepStrictEqual(A.EXIT, { OK: 0, BLOCKED: 1, CONFLICTS: 2 });
 });
 
+t('apply-publisher-edits does not drag the packaging CLI, book.config.js or glob into its require graph', () => {
+  // A child process, not require.cache in this one: this test file already requires
+  // package-for-publisher.js at the top, which would have loaded both of them.
+  // apply uses neither, so a broken book config must not fail an apply run.
+  const applyCli = path.join(__dirname, '..', 'apply-publisher-edits.js');
+  const loaded = execFileSync(process.execPath, ['-e',
+    `require(${JSON.stringify(applyCli)});` +
+    'console.log(Object.keys(require.cache).filter((m) => ' +
+    '/book\\.config\\.js$|package-for-publisher\\.js$|[\\\\/]glob[\\\\/]/.test(m)).join("\\n"));',
+  ], { encoding: 'utf8' }).trim();
+  assert.strictEqual(loaded, '', `apply must not load these modules, but loaded:\n${loaded}`);
+});
+
 console.log('\n=== apply: rollback on write failure ===');
 
 t('deletes the edit branch and restores the original branch when a returned file cannot be written', () => {

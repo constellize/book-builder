@@ -216,6 +216,37 @@ t('an indented heading is a heading-structure error, not just a warning', () => 
   assert.ok(/line 20/.test(error.detail), `detail should locate the heading, got: ${error.detail}`);
 });
 
+// The fifth C1 case. Feeding indentedHeadings from the KIND.CODE branch alone missed
+// this entirely: the tokenizer routes an indented line to KIND.LIST first while inList
+// is true, so a heading immediately after a bulleted list never reached that branch.
+// Seven headings in the real manuscript sit in exactly this position (ch1.md:133,
+// ch2.md:18, ch2.md:307, ch2.md:315, ch4.md:462, ch5.md:370, ch7.md:114), and pandoc
+// 3.8.3 swallows them into the list as `<p>### Heading</p>` with no <h3> at all.
+const LIST_FIXTURE = [
+  '- **Store prompts** with their context',
+  '- **Enable discovery and reuse** across projects',
+  '',
+  '### Breaking Down the Problem',
+  '',
+  'Before building anything, we apply the first step.',
+].join('\n');
+
+t('a heading indented after a bulleted list is a heading-structure error', () => {
+  const after = LIST_FIXTURE.replace('### Breaking', '    ### Breaking');
+  const found = compare(LIST_FIXTURE, after);
+  assert.strictEqual(G.hasErrors(found), true, 'a heading swallowed by a list must block the merge');
+  const error = found.find((x) => x.severity === 'error');
+  assert.strictEqual(error.rule, 'heading-structure');
+  assert.ok(/line 4/.test(error.detail), `detail should locate the heading, got: ${error.detail}`);
+});
+
+t('the indented-heading flag survives list classification', () => {
+  const after = LIST_FIXTURE.replace('### Breaking', '    ### Breaking');
+  const line = G.tokenize(after).lines[3];
+  assert.strictEqual(line.kind, 'list', 'the tokenizer still classifies it as list content');
+  assert.strictEqual(line.indentedHeading, true, 'and still flags it as a destroyed heading');
+});
+
 t('a heading indented by three spaces is still a heading and produces no findings', () => {
   // Pandoc accepts up to three leading spaces. Only four or more destroys the heading.
   assert.deepStrictEqual(compare(FIXTURE, FIXTURE.replace('## Section Two', '   ## Section Two')), []);
@@ -364,6 +395,22 @@ t('a removed token reports the lines it used to sit on', () => {
 t('an added token reports the line it appeared on', () => {
   const found = compare(FIXTURE, FIXTURE.replace('## Section Two', '## Section Two {{new_var}}'));
   assert.ok(/now ×1 at line 20/.test(found[0].message), found[0].message);
+});
+
+t('does not repeat a line number when a token occurs twice on the same line', () => {
+  // The count is still 2 -- deduplication is for display only.
+  const found = compare('A {SITE_BASE} and another {SITE_BASE}.\n', 'A {SITE_BASE} only.\n');
+  const placeholders = found.find((x) => x.rule === 'placeholder-tokens');
+  assert.ok(/changed 2 → 1/.test(placeholders.message), placeholders.message);
+  assert.ok(!/lines 1, 1/.test(placeholders.message), `must not read "lines 1, 1", got: ${placeholders.message}`);
+  assert.ok(/was line 1/.test(placeholders.message), placeholders.message);
+});
+
+t('names every line an indented heading affects, not just the last', () => {
+  const before = 'Intro.\n\n## Repeated\n\nMiddle.\n\n## Repeated\n\nEnd.\n';
+  const after = 'Intro.\n\n    ## Repeated\n\nMiddle.\n\n    ## Repeated\n\nEnd.\n';
+  const error = compare(before, after).find((x) => x.severity === 'error');
+  assert.ok(/lines 3, 7/.test(error.detail), `both lines must be named, got: ${error.detail}`);
 });
 
 t('caps the line list rather than dumping every occurrence', () => {

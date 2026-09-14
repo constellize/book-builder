@@ -58,20 +58,11 @@ function assertSourceInventory(contentDir) {
   );
 }
 
-function resolveLabel(requested, existingTags) {
-  if (requested !== undefined && requested !== null && String(requested).trim() !== '') {
-    const raw = String(requested).trim();
-    if (/^\d+$/.test(raw)) return `round-${raw}`;
-    const slug = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-    if (!slug) throw new Error(`--round "${raw}" contains no usable characters`);
-    return slug;
-  }
-  const used = existingTags
-    .map((tag) => tag.match(/^publisher\/round-(\d+)$/))
-    .filter(Boolean)
-    .map((m) => Number(m[1]));
-  return `round-${used.length ? Math.max(...used) + 1 : 1}`;
-}
+// Shared with apply-publisher-edits.js, which must resolve --round identically. It
+// lives in the bundle lib so apply can import it without also importing this module's
+// book.config.js and glob dependencies; re-exported here so `P.resolveLabel` keeps
+// working for callers and tests.
+const { resolveLabel } = B;
 
 function buildReadme({ label, date, edition, version }) {
   // A list, not three consecutive lines: markdown joins consecutive lines into one

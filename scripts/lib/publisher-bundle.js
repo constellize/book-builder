@@ -19,6 +19,33 @@ const EXPECTED_FILES = Object.freeze([
 ]);
 
 /**
+ * Resolve a `--round` value to the label used verbatim in the tag `publisher/<label>`,
+ * the workspace directory, and the bundle name. A bare integer is prefixed with
+ * `round-`; anything else is lowercased and sanitized. With no value, the default is
+ * the next unused integer.
+ *
+ * This lives in the bundle lib, not in package-for-publisher.js, because BOTH CLIs need
+ * it: `--round 1` has to mean round-1 on the way out and on the way back. The apply CLI
+ * importing it from the packaging CLI would drag book.config.js and glob -- neither of
+ * which apply uses -- into apply's require graph, so a broken book config would fail an
+ * apply run for no reason.
+ */
+function resolveLabel(requested, existingTags) {
+  if (requested !== undefined && requested !== null && String(requested).trim() !== '') {
+    const raw = String(requested).trim();
+    if (/^\d+$/.test(raw)) return `round-${raw}`;
+    const slug = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!slug) throw new Error(`--round "${raw}" contains no usable characters`);
+    return slug;
+  }
+  const used = existingTags
+    .map((tag) => tag.match(/^publisher\/round-(\d+)$/))
+    .filter(Boolean)
+    .map((m) => Number(m[1]));
+  return `round-${used.length ? Math.max(...used) + 1 : 1}`;
+}
+
+/**
  * Decode and normalize a returned file.
  *
  * Decoding is fatal rather than lossy on purpose. Node's default UTF-8 decode
@@ -258,7 +285,7 @@ function unzipTo(zipPath, destDir) {
 }
 
 module.exports = {
-  EXPECTED_FILES, BUNDLE_META_FILES,
+  EXPECTED_FILES, BUNDLE_META_FILES, resolveLabel,
   normalizeBuffer, readAndNormalize, dewrapParagraphs,
   sha256, renderManifest, parseManifest, verifyManifest,
   renderQueries, countQueries,

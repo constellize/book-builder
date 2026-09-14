@@ -18,6 +18,26 @@ t('lists the 13 source files in build order', () => {
   ]);
 });
 
+console.log('\n=== label resolution ===');
+
+// resolveLabel lives here, not in package-for-publisher.js, so apply-publisher-edits.js
+// can resolve --round identically without importing book.config.js and glob.
+t('prefixes a bare integer with round-', () => {
+  assert.strictEqual(B.resolveLabel('1', []), 'round-1');
+});
+
+t('sanitizes and lowercases a named label', () => {
+  assert.strictEqual(B.resolveLabel('Copy Edit Pass!', []), 'copy-edit-pass');
+});
+
+t('defaults to the next unused integer', () => {
+  assert.strictEqual(B.resolveLabel(undefined, ['publisher/round-1', 'publisher/round-2']), 'round-3');
+});
+
+t('throws when a label sanitizes to nothing', () => {
+  assert.throws(() => B.resolveLabel('!!!', []), /no usable characters/);
+});
+
 console.log('\n=== normalization ===');
 
 t('leaves clean LF content untouched', () => {

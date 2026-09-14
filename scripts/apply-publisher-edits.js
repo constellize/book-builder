@@ -17,12 +17,12 @@ const chalk = require('chalk');
 const { execFileSync } = require('child_process');
 const { program } = require('commander');
 
+// B.resolveLabel, not a second copy of its rules and not an import of the packaging
+// CLI: --round 1 must mean the same round-1 here that it meant when the package CLI
+// created publisher/round-1, but apply has no use for book.config.js or glob and must
+// not fail at require time because one of them is broken.
 const B = require('./lib/publisher-bundle.js');
 const G = require('./lib/publisher-guard.js');
-// resolveLabel, not a second copy of its rules: --round 1 must mean the same round-1
-// here that it meant when the package CLI created publisher/round-1. Requiring the
-// module is side-effect-free -- its own CLI body is behind a require.main guard.
-const { resolveLabel } = require('./package-for-publisher.js');
 
 const EXIT = { OK: 0, BLOCKED: 1, CONFLICTS: 2 };
 
@@ -190,7 +190,7 @@ function main() {
     // when the operator is already in trouble. It must accept the same spellings the
     // package CLI accepts: `--round 1` created publisher/round-1, so it has to resolve
     // to round-1 here too, not to the tag publisher/1 that has never existed.
-    const label = manifest ? manifest.label : (opts.round ? resolveLabel(opts.round, []) : null);
+    const label = manifest ? manifest.label : (opts.round ? B.resolveLabel(opts.round, []) : null);
     if (!label) {
       throw new Error('MANIFEST.TXT is missing or malformed. Re-run with --round <label> to name the round explicitly.');
     }
