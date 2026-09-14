@@ -53,6 +53,31 @@ t('names the round and lists the do-not-touch constructs', () => {
   assert.ok(md.includes('QUERIES.md'), 'README must point at QUERIES.md');
 });
 
+const readme = (images) => P.buildReadme({
+  label: 'round-1', date: '2026-09-12', edition: 'Author Preview v0.3.2', version: '0.3.2', images,
+});
+
+t('explains the figures are in a separate archive when one was built', () => {
+  const md = readme({ count: 59, archiveName: 'constellize-book-round-1-images.zip' });
+  assert.ok(md.includes('constellize-book-round-1-images.zip'), 'must name the archive');
+  assert.ok(md.includes('59'), 'must say how many figures');
+  assert.ok(/not in this zip/i.test(md), 'must say why they are not in the package');
+});
+
+t('explains the figures are absent when no archive was built', () => {
+  const md = readme(null);
+  assert.ok(/not included in\s*\nthis package|not included in this package/i.test(md));
+  assert.ok(/PDF/.test(md), 'must point at the typeset PDF instead');
+  assert.ok(!md.includes('-images.zip'), 'must not name an archive that was not built');
+});
+
+t('says alt text is editable and the path is not, either way', () => {
+  for (const md of [readme(null), readme({ count: 3, archiveName: 'x.zip' })]) {
+    assert.ok(/alt text/i.test(md), 'must mention alt text');
+    assert.ok(/path after it is not|path is not/i.test(md), 'must say the path is off limits');
+  }
+});
+
 console.log('\n=== rollback on failure ===');
 
 t('deletes the tag it created when a source file is missing at the tag', () => {

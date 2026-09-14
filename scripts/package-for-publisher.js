@@ -17,6 +17,7 @@ const { execFileSync } = require('child_process');
 const { program } = require('commander');
 
 const B = require('./lib/publisher-bundle.js');
+const G = require('./lib/publisher-guard.js');
 const bookConfig = require('../config/book.config.js');
 
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -64,7 +65,13 @@ function assertSourceInventory(contentDir) {
 // working for callers and tests.
 const { resolveLabel } = B;
 
-function buildReadme({ label, date, edition, version }) {
+/**
+ * `images` is null when no figure archive was built, otherwise
+ * `{ count, archiveName }`. Either way the README must say something: the sources
+ * carry ~59 image references, and a copy editor who is told nothing about them
+ * reasonably assumes files are missing and raises a query for each one.
+ */
+function buildReadme({ label, date, edition, version, images }) {
   // A list, not three consecutive lines: markdown joins consecutive lines into one
   // paragraph, so the three fields rendered as a single run-on sentence.
   return `# The Constellize Method — markdown for copy-editing
@@ -84,6 +91,25 @@ the book — nothing has to be re-keyed.
 3. \`ch1.md\` … \`ch9.md\`
 4. References — generated from a citation database, not included here
 5. \`appA.md\`, \`appB.md\`
+
+## The figures
+
+${images
+  ? `The ${images.count} figures are **not in this zip** — they would make it too large to
+email. They are in a separate archive, \`${images.archiveName}\`, which your contact
+will send you a link to.
+
+Unzip it alongside these files and the folder structure lines up with the paths in
+the markdown, so \`![A diagram](images/diagrams/ch3/thing.png)\` is
+\`images/diagrams/ch3/thing.png\` in that archive. You do not need the figures to
+copy-edit the prose, but they are there when you want to check that a description
+matches what the reader will see.`
+  : `The image references in the markdown point at figures that are **not included in
+this package**. You do not need them to copy-edit the prose. Where a description
+matters, the typeset PDF shows the figure in place.`}
+
+The descriptive alt text inside an image reference — the part in square brackets —
+is prose and yours to edit. The file path after it is not.
 
 ## What to edit
 
@@ -159,11 +185,63 @@ function readMetadataField(contentDir, tag, field, fallback) {
   return m[1].trim();
 }
 
+/**
+ * Build a separate archive of the figures the sources reference.
+ *
+ * Separate because it is ~38 MB against the markdown's ~100 KB: bundling them would
+ * cost the round its one real advantage, that the package emails. Read from the tag
+ * like everything else, so the figures match the prose that ships with them.
+ *
+ * Runs inside the caller's try/catch, so a missing or untracked figure aborts the
+ * whole package and rolls the tag back rather than shipping a half-empty archive.
+ */
+function buildImageArchive({ contentDir, tag, outgoingDir, bundleName, paths }) {
+  const archiveName = `${bundleName}-images`;
+  const imagesDir = path.join(outgoingDir, archiveName);
+  fs.removeSync(imagesDir);
+  fs.ensureDirSync(imagesDir);
+
+  let bytes = 0;
+  for (const rel of paths) {
+    // Paths come from markdown an editor can change. Refuse anything that would
+    // resolve outside the archive rather than trusting the source.
+    const dest = path.resolve(imagesDir, rel);
+    if (dest !== imagesDir && !dest.startsWith(imagesDir + path.sep)) {
+      throw new Error(`Image path escapes the archive directory: ${rel}`);
+    }
+
+    let data;
+    try {
+      data = execFileSync('git', ['show', `${tag}:${rel}`], {
+        cwd: contentDir,
+        maxBuffer: 256 * 1024 * 1024,
+      });
+    } catch (err) {
+      throw new Error(
+        `Image referenced by the sources is not committed at ${tag}: ${rel}\n` +
+        'Commit it, or remove the reference, then package again.'
+      );
+    }
+
+    fs.ensureDirSync(path.dirname(dest));
+    fs.writeFileSync(dest, data);
+    bytes += data.length;
+  }
+
+  const zipPath = path.join(outgoingDir, `${archiveName}.zip`);
+  fs.removeSync(zipPath);
+  B.zipDir(outgoingDir, archiveName, zipPath);
+
+  console.log(chalk.gray(`  + ${paths.length} figures (${(bytes / 1024 / 1024).toFixed(1)} MB)`));
+  return { count: paths.length, archiveName: `${archiveName}.zip`, zipPath, bytes };
+}
+
 function main() {
   program
     .name('package-for-publisher')
     .argument('[contentDir]', 'book content root', '.')
     .option('--round <label>', 'round label; a bare integer becomes round-N')
+    .option('--with-images', 'also build a separate archive of the figures the sources reference')
     .parse();
 
   const opts = program.opts();
@@ -220,12 +298,20 @@ function main() {
     fs.ensureDirSync(bundleDir);
 
     const files = [];
+    const referencedImages = new Set();
     for (const name of B.EXPECTED_FILES) {
       const content = execFileSync('git', ['show', `${tag}:${name}`], { cwd: contentDir, encoding: 'utf8' });
       fs.writeFileSync(path.join(bundleDir, name), content, 'utf8');
       files.push({ name, sha256: B.sha256(content) });
+      // Same extractor the guard compares with, so the archive holds exactly the
+      // figures whose alt text the publisher can see and edit - no more, no less.
+      Object.keys(G.fingerprint(content).imagePaths).forEach((p) => referencedImages.add(p));
       console.log(chalk.gray(`  + ${name}`));
     }
+
+    const images = opts.withImages
+      ? buildImageArchive({ contentDir, tag, outgoingDir, bundleName, paths: [...referencedImages].sort() })
+      : null;
 
     fs.writeFileSync(path.join(bundleDir, 'MANIFEST.TXT'),
       B.renderManifest({ label, tag, commit, date, files }), 'utf8');
@@ -234,6 +320,7 @@ function main() {
         label, date,
         edition: readMetadataField(contentDir, tag, 'edition', 'unknown'),
         version: readMetadataField(contentDir, tag, 'version', 'unknown'),
+        images,
       }), 'utf8');
     fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'), B.renderQueries(label), 'utf8');
 
@@ -243,6 +330,10 @@ function main() {
 
     console.log(chalk.green('\nPackage ready'));
     console.log(chalk.gray(`  zip: ${zipPath}`));
+    if (images) {
+      console.log(chalk.gray(`  figures: ${images.zipPath}`));
+      console.log(chalk.gray(`           ${images.count} files, ${(images.bytes / 1024 / 1024).toFixed(1)} MB - send this by file transfer, not email`));
+    }
     console.log(chalk.gray(`  tag: ${tag} -> ${commit}`));
     console.log(chalk.gray(`\nThe tag is the merge anchor. Push it so it is not lost:  git push origin ${tag}`));
   } catch (err) {
