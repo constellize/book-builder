@@ -121,6 +121,18 @@ function tokenize(text) {
   return { lines };
 }
 
+/**
+ * A thematic break -- 54 of them separate sections across the 13 sources. Guarded because
+ * nothing else here would notice one going missing: a break carries no fence, heading,
+ * citation or image token, so a dash-normalising pass that eats `---` produces a return
+ * that every other rule calls clean while section breaks quietly vanish.
+ *
+ * Deliberately narrower than CommonMark: the sources use `---` at column zero throughout,
+ * and the spaced forms (`* * *`, `- - -`) are indistinguishable from list items under the
+ * tokenizer above. Those would be missed; the form the manuscript actually uses is not.
+ */
+const THEMATIC_BREAK_RE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
+
 const PLACEHOLDER_RE = /\{SITE_BASE\}|\{CODEPROMPTU_REPO_BASE\}/g;
 const TEMPLATE_VAR_RE = /\{\{[^}\n]*\}\}/g;
 const ATTR_BLOCK_RE = /\{[#.][^}\n]*\}/g;
@@ -164,6 +176,7 @@ function fingerprint(text) {
     citations: {},
     headingLevels: [],
     indentedHeadings: {},
+    thematicBreaks: {},
     codeBlocks: [],
   };
 
@@ -202,6 +215,12 @@ function fingerprint(text) {
       fp.headingLevels.push(line.raw.match(/^ {0,3}(#+)/)[1].length);
     }
 
+    // Reached only outside code and div fences, both of which `continue` above.
+    if (THEMATIC_BREAK_RE.test(line.raw)) {
+      bump(fp.thematicBreaks, [rstrip(line.raw)], line.n);
+      continue; // a break line carries none of the tokens scanned below
+    }
+
     bump(fp.placeholders, line.raw.match(PLACEHOLDER_RE), line.n);
     bump(fp.templateVars, line.raw.match(TEMPLATE_VAR_RE), line.n);
     bump(fp.attrBlocks, line.raw.match(ATTR_BLOCK_RE), line.n);
@@ -230,6 +249,7 @@ const RULES = Object.freeze({
   'template-vars': 'error',
   'attr-blocks': 'error',
   'image-paths': 'error',
+  'thematic-breaks': 'error',
   citations: 'error',
   'heading-structure': 'warning',
   'code-content': 'warning',
@@ -371,6 +391,7 @@ function compareFiles({ name, snapshotText, returnedText, notes = {}, refKeys = 
     ['template-vars', 'templateVars'],
     ['attr-blocks', 'attrBlocks'],
     ['image-paths', 'imagePaths'],
+    ['thematic-breaks', 'thematicBreaks'],
     ['citations', 'citations'],
   ]) {
     const diff = counterDiff(before[key], after[key]);

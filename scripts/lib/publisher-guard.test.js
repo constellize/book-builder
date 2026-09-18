@@ -274,6 +274,44 @@ t('a changed image path is an image-paths error', () => {
   assert.deepStrictEqual(rules(compare(FIXTURE, after)), ['image-paths']);
 });
 
+// A dash-normalising pass is the realistic way a thematic break dies: it carries no
+// fence, heading, citation or image token, so before this rule existed a return that ate
+// `---` was reported clean.
+const BREAKS = [
+  '# Title',
+  '',
+  'Prose above the break.',
+  '',
+  '---',
+  '',
+  '## Section Two',
+  '',
+  '```yaml',
+  '---',
+  'key: value',
+  '```',
+].join('\n');
+
+t('counts thematic breaks outside code only', () => {
+  assert.deepStrictEqual(G.fingerprint(BREAKS).thematicBreaks, { '---': [5] });
+});
+
+t('a deleted thematic break is a thematic-breaks error', () => {
+  const after = BREAKS.split('\n').filter((_, i) => i !== 4).join('\n');
+  assert.deepStrictEqual(rules(compare(BREAKS, after)), ['thematic-breaks']);
+  assert.strictEqual(G.hasErrors(compare(BREAKS, after)), true);
+});
+
+t('an added thematic break is a thematic-breaks error', () => {
+  const after = BREAKS.replace('## Section Two', '---\n\n## Section Two');
+  assert.deepStrictEqual(rules(compare(BREAKS, after)), ['thematic-breaks']);
+});
+
+t('prose edits around an intact break produce no findings', () => {
+  const after = BREAKS.replace('Prose above the break.', 'Prose sitting above the break.');
+  assert.deepStrictEqual(compare(BREAKS, after), []);
+});
+
 t('a changed citation key is a citations error', () => {
   const after = FIXTURE.replace('atkinson2026', 'atkinson2027');
   assert.deepStrictEqual(rules(compare(FIXTURE, after)), ['citations']);
