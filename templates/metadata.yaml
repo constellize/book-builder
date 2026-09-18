@@ -56,8 +56,8 @@ disclaimer: "This work is the sole independent work of Steve Atkinson and Conste
 # ISBN and publishing details
 isbn: ""  # To be filled when available
 isbn13: ""  # To be filled when available
-edition: "Author Preview v0.3.2"
-version: "0.3.2"
+edition: "Author Preview v0.4.0-Round2"
+version: "0.4.0-Round2"
 
 # Technical metadata
 format: "PDF/X-1a"
