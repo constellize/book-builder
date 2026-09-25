@@ -856,6 +856,11 @@ class BookBuilder {
       // Include metadata file for version, copyright, disclaimer
       const metadataPath = path.resolve(this.toolsDir, 'templates/metadata.yaml');
       pandocArgs.push(`--metadata-file="${metadataPath}"`);
+      // `format:` in that shared metadata is "PDF/X-1a", there for the print PDF's XMP. The
+      // EPUB writer maps `format` straight to <dc:format>, so without this override every
+      // EPUB we shipped declared itself a prepress PDF. No template reads $format$, so
+      // overriding it here affects nothing else. See buildSystemDefects.md R9.
+      pandocArgs.push('--metadata=format:EPUB');
       // EPUB CSS for styling
       const epubCssPath = path.resolve(this.toolsDir, 'styles/epub.css');
       if (await fs.pathExists(epubCssPath)) {
