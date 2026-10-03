@@ -645,7 +645,10 @@ class BookBuilder {
       );
 
       // Pandoc runs from book root for all formats, use build/assets/images path
-      imageMarkdown = `\n![](build/assets/images/chapters/ch${chapterNum}.png)\n`;
+      // .pdf on print: the CMYK conversion above writes PDFs, and graphicx uses exactly
+      // the extension named here.
+      const ext = ((config.outputs[this.options.target] || {}).format === 'pdf' && /print/.test(this.options.target)) ? 'pdf' : 'png';
+      imageMarkdown = `\n![](build/assets/images/chapters/ch${chapterNum}.${ext})\n`;
       logMessage = `  Added chapter image for ch${chapterNum}`;
     }
 
@@ -661,7 +664,8 @@ class BookBuilder {
       );
 
       // Pandoc runs from book root for all formats, use build/assets/images path
-      imageMarkdown = `\n![](build/assets/images/appendices/app${appendixLetter}.png)\n`;
+      const extA = ((config.outputs[this.options.target] || {}).format === 'pdf' && /print/.test(this.options.target)) ? 'pdf' : 'png';
+      imageMarkdown = `\n![](build/assets/images/appendices/app${appendixLetter}.${extA})\n`;
       logMessage = `  Added appendix image for app${appendixLetter}`;
     }
 
@@ -717,7 +721,7 @@ class BookBuilder {
     // prepare-diagrams writes .pdf and the references have to follow -- pandoc emits
     // \includegraphics with whatever extension the markdown names, and graphicx will not
     // silently substitute one. Only diagrams are converted; opener art stays as-is.
-    if (outputConfig.format === 'pdf' && /print/.test(this.options.target)) {
+    if ((config.outputs[this.options.target] || {}).format === 'pdf' && /print/.test(this.options.target)) {
       content = content.replace(
         /\(build\/assets\/images\/diagrams\/([^)]+)\.png\)/g,
         '(build/assets/images/diagrams/$1.pdf)');
@@ -762,6 +766,27 @@ class BookBuilder {
         execSync(
           `node "${path.join(this.toolsDir, 'scripts', 'prepare-diagrams.js')}" print "${outputImagesDir}"`,
           { cwd: this.rootDir, stdio: 'inherit' });
+
+        // Chapter and appendix opener art is injected separately from the diagrams and
+        // was the last RGB left in the file -- 11 images, 9 chapters plus 2 appendices.
+        // Same CMYK treatment, same PDF container for the same reason, but no padding or
+        // border: these are full-width illustrations, not figures in a text column.
+        const srgb = '/usr/local/texlive/2025/texmf-dist/tex/generic/colorprofiles/sRGB.icc';
+        const cmyk = path.join(this.toolsDir, 'color', 'CoatedGRACoL2006.icc');
+        let converted = 0;
+        for (const sub of ['chapters', 'appendices']) {
+          const dir = path.join(outputImagesDir, sub);
+          if (!(await fs.pathExists(dir))) continue;
+          for (const f of await fs.readdir(dir)) {
+            if (!/\.png$/i.test(f)) continue;
+            const src = path.join(dir, f);
+            const dst = src.replace(/\.png$/i, '.pdf');
+            execSync(`magick "${src}" -background white -alpha remove -alpha off ` +
+                     `-profile "${srgb}" -profile "${cmyk}" -compress Zip "${dst}"`);
+            converted++;
+          }
+        }
+        console.log(chalk.gray(`  opener art (print): ${converted} converted to CMYK`));
       } catch (e) {
         console.log(chalk.yellow(`  CMYK conversion failed: ${e.message.split('\n')[0]}`));
         throw e; // a print build with RGB diagrams fails the publisher's spec -- do not ship it quietly

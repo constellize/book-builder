@@ -61,9 +61,23 @@ function checkPdf(file, { expectPrint }) {
   const rgbRefs = countOccurrences(buf, '/DeviceRGB');
   const cmykRefs = countOccurrences(buf, '/DeviceCMYK');
 
-  if (claimsX && rgbRefs > 0) {
-    const rgbImages = (run('pdfimages', ['-list', file]).split('\n').slice(2)
-      .filter((l) => /\brgb\b/.test(l))).length;
+  // Distinguish RGB *content* from an RGB *resource declaration*. tcolorbox pulls in
+  // pgf, which emits `<</pgfprgb[/Pattern/DeviceRGB]>>` -- a declaration of an available
+  // pattern colour space that nothing draws with. Reporting that identically to an actual
+  // RGB image would make the check cry wolf on a file whose every image is CMYK.
+  const pgfOnly = countOccurrences(buf, '/pgfprgb');
+  const rgbImagesCount = (run('pdfimages', ['-list', file]).split('\n').slice(2)
+    .filter((l) => /\brgb\b/.test(l))).length;
+
+  if (claimsX && rgbRefs > 0 && rgbImagesCount === 0 && rgbRefs <= pgfOnly) {
+    add('warning', 'x-rgb-declaration-only',
+      `declares ${subtype} and every image is CMYK, but carries ${rgbRefs} ` +
+      `/DeviceRGB resource declaration(s) from pgf/tcolorbox`,
+      'Nothing draws in RGB -- this is a colour space pgf declares as available. Strictly ' +
+      'PDF/X-1a admits no DeviceRGB at all, so a preflight may still reject it. Worth ' +
+      'asking the printer rather than assuming either way.');
+  } else if (claimsX && rgbRefs > 0) {
+    const rgbImages = rgbImagesCount;
     add('error', 'x-claim-vs-colour',
       `declares ${subtype || 'PDF/X'} but contains ${rgbRefs} /DeviceRGB reference(s)` +
       (rgbImages ? ` (${rgbImages} RGB image(s))` : ''),
