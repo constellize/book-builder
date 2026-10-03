@@ -917,6 +917,18 @@ class BookBuilder {
       // EPUB we shipped declared itself a prepress PDF. No template reads $format$, so
       // overriding it here affects nothing else. See buildSystemDefects.md R9.
       pandocArgs.push('--metadata=format:EPUB');
+      // metadata.yaml carries `date: \today` for the LaTeX targets. The EPUB writer maps
+      // `date` to <dc:date>, and a LaTeX macro is not a date, so pandoc emitted an EMPTY
+      // element -- the single error epubcheck reported (RSC-005 plus OPF-053). EPUB wants
+      // a W3C-NOTE-datetime value.
+      pandocArgs.push(`--metadata=date:${new Date().toISOString().slice(0, 10)}`);
+      // Cover. Retailers expect one and the EPUB had none at all. This is currently a
+      // generated placeholder (scripts/make-cover-placeholders.sh) -- swap the file for
+      // real art when the design team delivers; nothing else here changes.
+      const cover = path.resolve(this.rootDir, 'images', 'cover', 'epub-cover-placeholder.png');
+      if (await fs.pathExists(cover)) {
+        pandocArgs.push(`--epub-cover-image="${cover}"`);
+      }
       // EPUB CSS for styling
       const epubCssPath = path.resolve(this.toolsDir, 'styles/epub.css');
       if (await fs.pathExists(epubCssPath)) {
