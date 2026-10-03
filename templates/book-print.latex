@@ -7,8 +7,23 @@
 \providecommand{\tightlist}{%
   \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 
-% PDF/X-1a Compliance for print production
-\usepackage[x-1a]{pdfx}
+% Page geometry: 6x9in trade trim per the publisher's spec (Lightning Source).
+% Inner (gutter) 0.75in is the top of their 0.5-0.75in range -- the trim change takes the
+% extent from 188pp to ~250pp, and the thicker the book the more the binding eats.
+% No bleed: nothing in the design runs to the page edge, so the spec says none.
+%
+% LOAD ORDER IS LOAD-BEARING: geometry MUST come before pdfx. pdfx pins the PDF page size
+% when it loads, so with pdfx first, geometry still narrows the text block -- the page count
+% changes, which looks like it worked -- while the sheet stays Letter. Verified: pdfx-then-
+% geometry gives 612x792pt, geometry-then-pdfx gives 432x648pt = exactly 6x9in.
+\usepackage[paperwidth=6in,paperheight=9in,
+            inner=0.75in,outer=0.5in,top=0.75in,bottom=0.75in,
+            footskip=0.35in]{geometry}
+
+% PDF/X-1a:2001 compliance, as specified by the publisher (Lightning Source).
+% `x-1a1` is the 2001 part; plain `x-1a` emits :2003, which is also inconsistent with
+% the PDF 1.3 output this produces -- :2003 is defined against PDF 1.4.
+\usepackage[x-1a1]{pdfx}
 \usepackage[cmyk]{xcolor}
 
 % Font setup
@@ -84,8 +99,7 @@
    \renewcommand{\item}[1][]{\olditem}}
   {\end{list}}
 
-% Page layout - simple approach without geometry package
-\usepackage[letterpaper,margin=1in,bindingoffset=0.2in]{geometry}
+% Page layout: see the geometry block near the top, which MUST precede pdfx.
 
 % Better spacing
 \usepackage{setspace}
