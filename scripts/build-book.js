@@ -713,6 +713,16 @@ class BookBuilder {
     // Pandoc always runs from book root, so use build/assets/images/ for all formats
     content = content.replace(/\(images\//g, '(build/assets/images/');
 
+    // Print targets use the CMYK diagram set. xelatex cannot embed a CMYK PNG, so
+    // prepare-diagrams writes .pdf and the references have to follow -- pandoc emits
+    // \includegraphics with whatever extension the markdown names, and graphicx will not
+    // silently substitute one. Only diagrams are converted; opener art stays as-is.
+    if (outputConfig.format === 'pdf' && /print/.test(this.options.target)) {
+      content = content.replace(
+        /\(build\/assets\/images\/diagrams\/([^)]+)\.png\)/g,
+        '(build/assets/images/diagrams/$1.pdf)');
+    }
+
     return content;
   }
 
@@ -744,6 +754,20 @@ class BookBuilder {
     // e-reader never does, and the EPUB was 54MB when Amazon bills per-MB on delivery.
     // Print keeps the originals: its CMYK conversion is a separate step.
     const fmt = (config.outputs[this.options.target] || {}).format;
+
+    // Print: CMYK diagrams, per the publisher's spec. Converted from the same light-theme
+    // sources the screen set uses; see prepare-diagrams.js for why the container is PDF.
+    if (fmt === 'pdf' && /print/.test(this.options.target)) {
+      try {
+        execSync(
+          `node "${path.join(this.toolsDir, 'scripts', 'prepare-diagrams.js')}" print "${outputImagesDir}"`,
+          { cwd: this.rootDir, stdio: 'inherit' });
+      } catch (e) {
+        console.log(chalk.yellow(`  CMYK conversion failed: ${e.message.split('\n')[0]}`));
+        throw e; // a print build with RGB diagrams fails the publisher's spec -- do not ship it quietly
+      }
+    }
+
     if (fmt === 'epub3' || fmt === 'html') {
       try {
         // Remove the full-resolution copies first. fs.copy above has just written them,
@@ -758,6 +782,7 @@ class BookBuilder {
         console.log(chalk.yellow(`  diagram downsizing skipped: ${e.message.split('\n')[0]}`));
       }
 
+      // (screen targets only -- print falls through to the CMYK branch below)
       // Chapter and appendix opener art, same reasoning. These are photographic rather than
       // line art, so they get a plain resize with no padding or border -- the diagram
       // treatment would frame a full-bleed illustration, which is not what it is.

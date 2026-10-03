@@ -185,6 +185,20 @@ module.exports = {
       docxVariant: 'digital',
       defaultsFile: 'book-builder/config/pandoc-defaults-docx-digital.yaml'
     },
+    // Narration variant: the publisher needs Word only for the audiobook, so this is
+    // clean readable text with the artwork stripped (see filters/strip-images.lua) and no
+    // font embedding. The two typesetter variants are unchanged -- they exist for a
+    // different handoff and are ~54MB precisely because they carry both.
+    'docx-narration': {
+      directory: './build/docx-narration',
+      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      siteBaseUrl: 'https://constellize.com',
+      format: 'docx',
+      standalone: true,
+      referenceDoc: 'book-builder/templates/docx/reference-digital.docx',
+      docxVariant: 'digital',
+      defaultsFile: 'book-builder/config/pandoc-defaults-docx-narration.yaml'
+    },
     'docx-print': {
       directory: './build/docx-print',
       codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
@@ -276,7 +290,11 @@ module.exports = {
       // top-level-`citeproc:` mistake that silently reverted all 28 citations to literal
       // "[@key]" text in the digital PDF.
       'docx-digital': [CALLOUT_FILTER_DOCX_DIGITAL, LINK_FILTER],
-      'docx-print': [CALLOUT_FILTER_DOCX_PRINT, LINK_FILTER]
+      'docx-print': [CALLOUT_FILTER_DOCX_PRINT, LINK_FILTER],
+      // strip-images runs LAST: the callout filters emit image elements of their own, so
+      // stripping any earlier would miss them.
+      'docx-narration': [CALLOUT_FILTER_DOCX_DIGITAL, LINK_FILTER,
+        'book-builder/templates/filters/strip-images.lua']
     },
 
     metadata: 'book-builder/templates/metadata.yaml'
@@ -300,7 +318,8 @@ module.exports = {
       development: 'chicago',
       epub: 'chicago',
       'docx-digital': 'chicago',
-      'docx-print': 'chicago'
+      'docx-print': 'chicago',
+      'docx-narration': 'chicago'
     }
   },
 
