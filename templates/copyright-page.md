@@ -1,3 +1,5 @@
+# Copyright {.unnumbered}
+
 ::: {.copyright-page}
 
 **The Constellize Method**
@@ -6,7 +8,7 @@
 
 Published by Constellize Press
 
-Author Preview v0.3.2
+{{EDITION}}
 
 ---
 

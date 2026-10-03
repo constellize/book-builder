@@ -355,6 +355,28 @@ class BookBuilder {
 
     const allFiles = [];
 
+    // EPUB front matter: a copyright page. The LaTeX targets get one from their template,
+    // but pandoc's built-in EPUB template has none -- so every EPUB we shipped carried no
+    // edition string at all and a reader could not tell which draft they held. The
+    // publisher asked for this explicitly.
+    //
+    // templates/copyright-page.md existed all along and was referenced by nothing, with a
+    // version hardcoded into it. It is now the source for this, with {{EDITION}} filled
+    // from the same metadata.yaml the copyright page of every other format reads.
+    if ((config.outputs[this.options.target] || {}).format === 'epub3') {
+      const tpl = path.resolve(this.toolsDir, 'templates', 'copyright-page.md');
+      if (await fs.pathExists(tpl)) {
+        const meta = await fs.readFile(
+          path.resolve(this.toolsDir, 'templates', 'metadata.yaml'), 'utf8');
+        const edition = (meta.match(/^edition:\s*"([^"]+)"/m) || [, 'Author Preview'])[1];
+        const body = (await fs.readFile(tpl, 'utf8')).replace(/\{\{EDITION\}\}/g, edition);
+        const dst = path.join(intermediateDir, '000-copyright.md');
+        await fs.writeFile(dst, body);
+        allFiles.push(dst);
+        console.log(chalk.gray(`Added copyright page (${edition})`));
+      }
+    }
+
     // Add foreword first if it exists
     if (config.source.foreword) {
       const forewordPath = path.resolve(this.rootDir, config.source.foreword);
@@ -716,6 +738,40 @@ class BookBuilder {
       await fs.copy(imagesDir, outputImagesDir);
       console.log(chalk.gray("Images copied to build directory"));
     }
+
+    // Screen targets get downsized diagrams over the top of the full-resolution copies.
+    // The sources are up to 2400px wide because print needs 300dpi at the trim size; an
+    // e-reader never does, and the EPUB was 54MB when Amazon bills per-MB on delivery.
+    // Print keeps the originals: its CMYK conversion is a separate step.
+    const fmt = (config.outputs[this.options.target] || {}).format;
+    if (fmt === 'epub3' || fmt === 'html') {
+      try {
+        // Remove the full-resolution copies first. fs.copy above has just written them,
+        // so they are NEWER than their sources and prepare-diagrams' mtime cache would
+        // skip every one -- it reported "61 cached" and the EPUB stayed at 40MB of media.
+        await fs.remove(path.join(outputImagesDir, 'diagrams'));
+        execSync(
+          `node "${path.join(this.toolsDir, 'scripts', 'prepare-diagrams.js')}" screen "${outputImagesDir}"`,
+          { cwd: this.rootDir, stdio: 'inherit' });
+      } catch (e) {
+        // Non-fatal: the full-resolution copies are already in place and correct, just large.
+        console.log(chalk.yellow(`  diagram downsizing skipped: ${e.message.split('\n')[0]}`));
+      }
+
+      // Chapter and appendix opener art, same reasoning. These are photographic rather than
+      // line art, so they get a plain resize with no padding or border -- the diagram
+      // treatment would frame a full-bleed illustration, which is not what it is.
+      for (const sub of ['chapters', 'appendices', 'named']) {
+        const dir = path.join(outputImagesDir, sub);
+        if (!(await fs.pathExists(dir))) continue;
+        for (const f of await fs.readdir(dir)) {
+          if (!/\.(png|jpe?g)$/i.test(f)) continue;
+          try {
+            execSync(`magick "${path.join(dir, f)}" -resize "1600>" -strip "${path.join(dir, f)}"`);
+          } catch { /* leave the full-resolution copy in place */ }
+        }
+      }
+    }
   }
 
   /**
@@ -1016,6 +1072,15 @@ class BookBuilder {
   async getIntermediateFilesInOrder() {
     const intermediateDir = path.join(this.buildDir, "intermediate");
     const files = [];
+
+    // Copyright page first, when processSourceFiles generated one (epub only -- the LaTeX
+    // targets get theirs from the template). This list is explicit rather than a directory
+    // scan, so anything added to intermediate/ must also be named here or pandoc never
+    // sees it: the file is written, logged as processed, and then silently left out.
+    const copyrightFile = path.join(intermediateDir, '000-copyright.md');
+    if (await fs.pathExists(copyrightFile)) {
+      files.push(copyrightFile);
+    }
 
     // Add foreword first
     if (config.source.foreword) {
