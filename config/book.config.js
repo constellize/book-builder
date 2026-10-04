@@ -239,7 +239,11 @@ module.exports = {
     'development',
     'epub',
     'docx-digital',
-    'docx-print'
+    'docx-print',
+    // Added late: docx-narration shipped without being listed here, so `build:all`
+    // silently skipped it and left a stale artefact behind while every other format
+    // rebuilt. Anything with its own build/<target>/ directory belongs in this list.
+    'docx-narration'
   ],
 
   // Pandoc configuration
