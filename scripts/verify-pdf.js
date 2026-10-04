@@ -142,6 +142,40 @@ function checkPdf(file, { expectPrint }) {
     }
   }
 
+  // --- text running past the margin ------------------------------------------
+  // This is measured from the FINISHED PDF rather than by parsing LaTeX's log, because
+  // pandoc runs xelatex in a temp directory and discards the log: the Overfull \hbox
+  // warnings never reach anyone. 64 of 111 pages were overrunning the outer margin after
+  // the 6x9 trim change, some past the trim edge entirely, and nothing in the pipeline
+  // said a word.
+  //
+  // A tolerance of 5pt is deliberate. microtype deliberately protrudes punctuation and
+  // narrow glyphs a point or two past the margin -- that is correct typography, not a
+  // defect, and flagging it would bury the real overruns in ~1000 false positives.
+  if (expectPrint) {
+    const OVERRUN_TOLERANCE_PT = 5;
+    const bbox = run('pdftotext', ['-bbox', file, '-']);
+    let pageNo = 0;
+    const bad = [];
+    for (const l of bbox.split('\n')) {
+      if (l.includes('<page ')) { pageNo++; continue; }
+      const m = /xMax="([\d.]+)"[^>]*>(.*)<\/word>/.exec(l);
+      if (!m || !pageNo) continue;
+      // Recto has the wide (inner) margin on the left, verso on the right.
+      const limit = pageNo % 2 ? 396 : 378;
+      const over = parseFloat(m[1]) - limit;
+      if (over >= OVERRUN_TOLERANCE_PT) bad.push({ over, pageNo, word: m[2] });
+    }
+    if (bad.length) {
+      bad.sort((a, b) => b.over - a.over);
+      const offPaper = bad.filter((b) => (b.pageNo % 2 ? 396 : 378) + b.over > 432);
+      add(offPaper.length ? 'error' : 'warning', 'text-past-margin',
+        `${bad.length} word(s) run more than ${OVERRUN_TOLERANCE_PT}pt past the margin` +
+        (offPaper.length ? `, ${offPaper.length} past the trim edge` : ''),
+        bad.slice(0, 5).map((b) => `  p${b.pageNo}  +${b.over.toFixed(1)}pt  ${b.word.slice(0, 48)}`).join('\n'));
+    }
+  }
+
   add('info', 'summary',
     `${pages}pp, ${size}, subtype=${subtype || 'none'}, ` +
     `RGB=${rgbRefs} CMYK=${cmykRefs}, tagged=${tagged ? 'yes' : 'no'}`);

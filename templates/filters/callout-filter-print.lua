@@ -83,6 +83,17 @@ function extractMessageAfterMarker(para)
 end
 
 -- Generate conversation callout (chat-style with human/AI/reflection) - Print style
+--[[
+  `varwidth boxed title` bounds the title box so a long one wraps instead of running off
+  the paper. promptref titles are prompt names -- "Implement Infrastructure Health Checks
+  For Databases, Caches, APIs, And Filesystems" -- and an attached boxed title is a single
+  unbreakable line by default. At the 6x9 trim's 4.75in measure those reached x=452pt on a
+  432pt page: past the trim, not merely past the margin.
+
+  Note these LaTeX templates are consumed by string.format, so a literal % must be written
+  %% -- which is why the explanation lives here rather than as a LaTeX comment inside them.
+--]]
+
 function generateConversationCallout(content)
   local latex = [[
 \begin{tcolorbox}[
@@ -92,6 +103,7 @@ function generateConversationCallout(content)
   breakable,
   enhanced,
   attach boxed title to top left={yshift=-2mm, xshift=2mm},
+  varwidth boxed title=0.82\linewidth,
   boxed title style={size=small,colback=teal!75!black},
   top=0.75em,
   bottom=0.5em
@@ -188,6 +200,7 @@ function generatePromptRefCallout(content, elem)
   breakable,
   enhanced,
   attach boxed title to top left={yshift=-2mm, xshift=2mm},
+  varwidth boxed title=0.82\linewidth,
   boxed title style={size=small,colback=cyan!75!black},
   top=0.75em,
   bottom=0.5em
@@ -251,6 +264,7 @@ function generateLatexCallout(calloutType, content, elem)
   breakable,
   enhanced,
   attach boxed title to top left={yshift=-2mm, xshift=2mm},
+  varwidth boxed title=0.82\linewidth,
   boxed title style={size=small,colback=%s!75!black},
   top=0.75em,
   bottom=0.5em%s
