@@ -94,7 +94,7 @@ module.exports = {
   repository: {
     // CodePromptu repository - for code examples and implementation
     // Replaced in {CODEPROMPTU_REPO_BASE} placeholders  
-    codepromptuBaseUrl: process.env.CODEPROMPTU_REPO_BASE_URL || "https://github.com/nowucca/codepromptu/blob/main",
+    codepromptuBaseUrl: process.env.CODEPROMPTU_REPO_BASE_URL || "https://github.com/constellize/codepromptu/blob/main",
     
     // Constellize website - for prompts, templates, book resources, and online content
     // Replaced in {SITE_BASE} placeholders
@@ -108,7 +108,7 @@ module.exports = {
   outputs: {
     digital: {
       directory: './build/digital',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
@@ -119,7 +119,7 @@ module.exports = {
     },
     print: {
       directory: './build/print',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
@@ -131,7 +131,7 @@ module.exports = {
     },
     web: {
       directory: './build/web',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'html5',
       standalone: true
@@ -145,7 +145,7 @@ module.exports = {
     },
     epub: {
       directory: './build/epub',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'epub3',
       standalone: true
@@ -174,7 +174,7 @@ module.exports = {
     // one overwrite the other.
     'docx-digital': {
       directory: './build/docx-digital',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'docx',
       dpi: 300,
@@ -191,7 +191,7 @@ module.exports = {
     // different handoff and are ~54MB precisely because they carry both.
     'docx-narration': {
       directory: './build/docx-narration',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'docx',
       standalone: true,
@@ -201,7 +201,7 @@ module.exports = {
     },
     'docx-print': {
       directory: './build/docx-print',
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'docx',
       dpi: 300,
@@ -217,7 +217,7 @@ module.exports = {
     // it is deliberately NOT part of `--target all`, which builds digital + print.
     pdf: {
       directory: './build/digital', // Default to digital format
-      codepromptuRepoBaseUrl: 'https://github.com/nowucca/codepromptu/blob/main',
+      codepromptuRepoBaseUrl: 'https://github.com/constellize/codepromptu/blob/main',
       siteBaseUrl: 'https://constellize.com',
       format: 'pdf',
       engine: 'xelatex',
