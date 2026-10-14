@@ -323,7 +323,7 @@
 ## Current State
 
 ### Repository
-- **Location**: https://github.com/nowucca/book-builder
+- **Location**: https://github.com/constellize/book-builder
 - **Branch**: main
 - **Status**: Clean, all changes committed
 - **Latest Commits**:

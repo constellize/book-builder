@@ -191,7 +191,7 @@
 
 ### December 25, 2024 (Initial Release)
 - **Extracted from Constellize Book**: Full git history preserved
-- **Set up as standalone repo**: https://github.com/nowucca/book-builder
+- **Set up as standalone repo**: https://github.com/constellize/book-builder
 - **Configured as submodule**: In book project at book/book-builder/
 - **All features working**: PDF, HTML, EPUB builds successful
 - **Tagged v1.0.0**: First official release

@@ -251,7 +251,7 @@ Provide a turnkey solution for building technical books that handles the complex
 **Status**: Active, production-ready
 **Origin**: Extracted from Constellize Book project (Phase 0)
 **Git History**: Preserved from original book repository
-**Repository**: https://github.com/nowucca/book-builder
+**Repository**: https://github.com/constellize/book-builder
 
 **Recent Work**:
 - Extracted from book/tools/ with full git history
