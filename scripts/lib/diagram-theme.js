@@ -36,6 +36,46 @@ const MAP = {
   '#7A8A99': '#687887', //  3.55:1 ->  4.54:1   grey
   '#888888': '#767676', //  3.54:1 ->  4.54:1   grey
   // #666666 already clears AA at 5.74:1 and is left alone.
+
+  // --- Panel fills -------------------------------------------------------------------
+  // These sixteen were missed by the first pass, which only covered the six documented
+  // palette colours. They are dark surfaces that sat just ABOVE a near-black ground, so
+  // darkening them is wrong -- they have to be inverted in lightness, to sit just BELOW
+  // white. Hue kept, saturation capped at 0.45, lightness set to 0.945.
+  //
+  // This was not cosmetic. With these left alone the "light" renders still carried large
+  // dark panels: constellize-layer-diagram measured 74% dark pixels, health-check-
+  // architecture 69%, ai-failure-modes 61% -- the exact heavy-ink defect the remap exists
+  // to remove. All sixteen are used as backgroundColor only, never as strokeColor
+  // (verified across all 61 sources), so lightening them cannot make a stroke vanish.
+  '#1a2d32': '#EDF4F5',
+  '#0f2830': '#EBF4F7',
+  '#1a1a2e': '#EDEDF5',
+  '#2a1820': '#F5EDF1',
+  '#0f2820': '#EBF7F3',
+  '#1a2332': '#EDF0F5',
+  '#2a2520': '#F3F1EF',
+  '#0f1a1f': '#ECF3F6',
+  '#2e2010': '#F7F1EB',
+  '#1a4d47': '#EBF7F6',
+  '#1a3d4a': '#EBF4F7',
+  '#2a2a3e': '#EEEEF4',
+  '#1a5d57': '#EBF7F6',
+  '#1a3d37': '#EBF7F5',
+  '#1a3d2a': '#EBF7F0',
+  '#3d2e1a': '#F7F2EB',
+
+  // --- Stray accents -----------------------------------------------------------------
+  // Same treatment as the main palette: darkened along their own hue until AA on white.
+  '#12b886': '#0D8763', //  2.55:1 ->  4.50:1   green
+  '#2f9e44': '#28873A', //  3.45:1 ->  4.55:1   green
+  '#f08c00': '#AE6500', //  2.48:1 ->  4.51:1   orange
+  '#999999': '#767676', //  2.85:1 ->  4.54:1   grey
+  '#FF6B6B': '#C92A2A', //  2.78:1 ->  5.46:1   coral red. The AA-minimum answer here was
+                        //  #EE0000, rejected for the same reason #EC002B was earlier: a
+                        //  pure saturated red is too hot to hold in CMYK. #C92A2A clears
+                        //  AA with room to spare and separates cleanly.
+  // #9c36b5 (5.82:1) and #333333 (12.63:1) already clear AA and are left alone.
 };
 
 /** Remap one colour value, preserving any 2-digit alpha suffix and `transparent`. */
