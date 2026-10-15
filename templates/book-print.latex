@@ -399,6 +399,13 @@ $if(lot)$
 \listoftables
 $endif$
 
+% Clear the running marks the front matter just set.
+% \tableofcontents issues \chapter*{Contents} with \@mkboth, which sets BOTH \leftmark and
+% \rightmark to "Contents". The foreword that follows is a \section (it is `## Foreword` in
+% markdown, not `#`), and a section only updates \rightmark -- so \leftmark kept saying
+% "Contents" for 30 pages, until the first real \chapter finally issued a \chaptermark.
+\markboth{}{}
+
 % Main content
 $body$
 
