@@ -23,6 +23,12 @@
 
 // base -> light-theme replacement, with the measured contrast on white
 const MAP = {
+  // KNOWN DEFECT, left here as the record: this entry is only correct for the GROUND.
+  // Several diagrams also used #0B1020 as a TEXT colour -- dark text on a lighter panel --
+  // and mapping those to white produced 20 white-on-white labels that rendered as nothing.
+  // Fixed afterwards by tmp/fix-invisible-text.js. The lesson is that a flat colour map
+  // cannot express "this colour means ground here and ink there"; role matters, and
+  // viewBackgroundColor now has its own GROUND_MAP for exactly that reason.
   '#0B1020': '#FFFFFF', //  ground: near-black navy -> white
   '#EAF0FF': '#1E2430', //  1.14:1 -> 15.55:1   primary text and strokes
   '#ffffff': '#1E2430', //  1.00:1 -> 15.55:1   white strokes
