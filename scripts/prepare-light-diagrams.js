@@ -22,7 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { toLightTheme } = require('./lib/diagram-theme.js');
+const { remapGround } = require('./lib/diagram-theme.js');
 
 const OUT = path.resolve(process.cwd(), 'build', 'diagram-harness');
 const SRC = path.resolve(process.cwd(), 'images', 'diagrams');
@@ -43,8 +43,15 @@ function main() {
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.excalidraw')) continue;
       const doc = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
-      const n = toLightTheme(doc);
-      remapped += n;
+      // DO NOT remap here. The sources are already light -- the migration was a one-off
+      // and is baked in. Re-applying it inverts them, because the map chains: a dark fill
+      // #0B1020 became #FFFFFF, and the map also sends #FFFFFF -> #1E2430 for white strokes.
+      // Running it a second time turned 113 white fills near-black and all 61 grounds dark,
+      // while reporting "61 scenes remapped" and no errors. Render what is in the file.
+      if (remapGround(doc.appState && doc.appState.viewBackgroundColor) !== (doc.appState || {}).viewBackgroundColor) {
+        console.warn(`  WARNING ${name} still has a dark ground -- migrate it first`);
+        remapped++;
+      }
       scenes.push({
         chapter,
         // The PNGs the manuscript references are "<name>.excalidraw.png".
@@ -64,7 +71,7 @@ function main() {
 
   fs.writeFileSync(path.join(OUT, 'scenes.json'), JSON.stringify(scenes));
   fs.writeFileSync(path.join(OUT, 'index.html'), html(scenes.length, TARGET_LONG_EDGE));
-  console.log(`  ${scenes.length} scenes remapped (${remapped} colour values changed)`);
+  console.log(`  ${scenes.length} scenes staged verbatim` + (remapped ? ` -- ${remapped} STILL DARK, see warnings above` : ' (all light)'));
   console.log(`  harness: ${path.join(OUT, 'index.html')}`);
   const thin = scenes.filter((s) => s.count <= 2);
   if (thin.length) console.log(`  note: ${thin.length} scene(s) have <=2 elements and may be genuinely empty`);

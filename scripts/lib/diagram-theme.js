@@ -90,11 +90,32 @@ function remapColor(value) {
 }
 
 /** Remap a parsed .excalidraw document in place and report what changed. */
+/**
+ * Grounds only. This is deliberately NOT the element map.
+ *
+ * The element map sends #FFFFFF -> #1E2430, because a WHITE STROKE on a dark ground has to
+ * become dark ink on white. Applying that same rule to viewBackgroundColor turns an
+ * already-light document's white ground into near-black -- so running the remap twice
+ * inverted all 61 diagrams while cheerfully reporting success. Grounds get their own table,
+ * and anything not listed is left alone, which makes the whole transform idempotent.
+ */
+const GROUND_MAP = {
+  '#0B1020': '#FFFFFF',
+  '#1a1a2e': '#FFFFFF',
+  '#0f1a1f': '#FFFFFF',
+};
+
+function remapGround(value) {
+  if (typeof value !== 'string') return '#FFFFFF';
+  const base = value.trim();
+  return GROUND_MAP[base] || GROUND_MAP[base.toUpperCase()] || GROUND_MAP[base.toLowerCase()] || base;
+}
+
 function toLightTheme(doc) {
   let changed = 0;
   const app = doc.appState || (doc.appState = {});
   const before = app.viewBackgroundColor;
-  app.viewBackgroundColor = remapColor(before) || '#FFFFFF';
+  app.viewBackgroundColor = remapGround(before);
   if (app.viewBackgroundColor !== before) changed++;
   // Excalidraw honours an explicit theme; make the intent unambiguous for any renderer.
   app.theme = 'light';
@@ -108,4 +129,4 @@ function toLightTheme(doc) {
   return changed;
 }
 
-module.exports = { MAP, remapColor, toLightTheme };
+module.exports = { MAP, GROUND_MAP, remapColor, remapGround, toLightTheme };
