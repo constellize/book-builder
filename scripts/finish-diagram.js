@@ -9,11 +9,17 @@
  *      this snaps it back. Visually a no-op -- everything scales together and the build then
  *      scales the figure to the column by the reciprocal.
  *
- *   2. Scale all text so the diagram's MOST COMMON label lands on 16 units = 8pt printed.
- *      Relative hierarchy is untouched: if a title was twice the body label, it still is.
+ *   2. Report any text that is NOT on the standard ladder. It does not rescale type.
  *
- * So the author never picks a font size to hit a printed target. Draw it so it reads, run
- * this, and the printed size is right -- and identical to every other figure in the book.
+ * Because the canvas is pinned at 684, Excalidraw's own toolbar presets ARE the printed
+ * sizes -- S is 8pt, M is 10pt, L is 14pt, XL is 18pt, in every diagram in the book. So the
+ * author picks from the toolbar like normal and gets uniformity for free. An earlier version
+ * rescaled type per diagram to hit a target; that worked but left odd values like 13.1 and
+ * 26.2 in the files, which is exactly the "numbers that mean nothing" problem we just removed.
+ *
+ * Geometry is snapped WITHOUT touching fontSize, so standard sizes stay standard. A large
+ * snap would change how text sits in its boxes, so anything past 10% is a warning rather
+ * than a silent fix.
  *
  *   node finish-diagram.js ch1/foo.excalidraw      one file
  *   node finish-diagram.js --all                   every file
@@ -24,7 +30,9 @@ const path = require('path');
 
 const UPP = 2;                         // units per printed point
 const CANVAS_W = 4.75 * 72 * UPP;      // 684
-const LABEL_UNITS = 8 * UPP;           // 16  == Excalidraw's "S" preset == 8pt printed
+// Excalidraw's toolbar presets, which at 2 units/pt are exactly the sizes we want.
+const LADDER = { 16: 'S  label 8pt', 20: 'M  heading 10pt', 28: 'L  subtitle 14pt', 36: 'XL title 18pt' };
+const LABEL_UNITS = 16;
 const MIN_STROKE = 0.3 * UPP;          // 0.6 == 0.3pt, comfortably above hairline
 
 const ROOT = path.resolve(__dirname, '..', '..', 'images', 'diagrams');
@@ -63,26 +71,23 @@ function finish(file) {
   const texts = els.filter((e) => e.type === 'text' && (e.text || '').trim());
   if (!texts.length) return null;
 
-  // 1. geometry -> 684 wide
   const k = CANVAS_W / b.w;
-  // 2. type: the modal size becomes LABEL_UNITS, measured AFTER the geometry scale
-  const counts = new Map();
-  for (const t of texts) counts.set(t.fontSize, (counts.get(t.fontSize) || 0) + 1);
-  const modal = [...counts.entries()].sort((a, b2) => b2[1] - a[1] || b2[0] - a[0])[0][0];
-  const kText = LABEL_UNITS / (modal * k);
+  const offLadder = [...new Set(texts.map((t) => t.fontSize))]
+    .filter((v) => !(Math.round(v) in LADDER) || Math.abs(v - Math.round(v)) > 0.01)
+    .sort((a, b2) => a - b2);
+  const before = { w: b.w, offLadder, drift: k };
 
-  const before = { w: b.w, modal, modalPt: modal * (Math.min(4.75, 7.5 * b.w / b.h) * 72 / b.w) };
+  if (check) return { ...before, ok: Math.abs(k - 1) < 0.01 && !offLadder.length };
 
-  if (check) {
-    return { ...before, needGeom: k, needText: kText,
-             ok: Math.abs(k - 1) < 0.01 && Math.abs(kText - 1) < 0.01 };
-  }
-
+  // Geometry only. fontSize is deliberately NOT in this loop: the author chose those from the
+  // toolbar and they are already the right printed sizes.
   for (const el of els) {
-    for (const f of SCALE) if (typeof el[f] === 'number') el[f] *= k;
+    for (const f of SCALE) {
+      if (f === 'fontSize') continue;
+      if (typeof el[f] === 'number') el[f] *= k;
+    }
     if (Array.isArray(el.points)) el.points = el.points.map((p) => p.map((n) => n * k));
   }
-  for (const t of texts) t.fontSize *= kText;
   // Keep strokes off the hairline. Not scaled with the text -- line weight is its own decision.
   for (const el of els) {
     if (typeof el.strokeWidth === 'number' && el.strokeWidth < MIN_STROKE) el.strokeWidth = MIN_STROKE;
@@ -91,7 +96,7 @@ function finish(file) {
   for (const el of els) { el.x -= nb.x0; el.y -= nb.y0; }
 
   fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n');
-  return { ...before, geom: k, text: kText, after: LABEL_UNITS / UPP };
+  return { ...before, applied: true };
 }
 
 const files = all ? listAll(ROOT)
@@ -106,10 +111,10 @@ for (const f of files) {
   const rel = path.relative(ROOT, f);
   const r = finish(f);
   if (!r) { console.log(`  ${rel}: no text, skipped`); continue; }
-  if (check) {
-    console.log(`  ${r.ok ? 'OK  ' : 'TODO'} ${rel.padEnd(46)} `
-      + `label ${r.modalPt.toFixed(1)}pt  (geometry ${r.needGeom.toFixed(2)}x, type ${r.needText.toFixed(2)}x)`);
-  } else {
-    console.log(`  ${rel.padEnd(46)} label ${r.modalPt.toFixed(1)}pt -> ${r.after}pt`);
-  }
+  const drift = Math.abs(r.drift - 1);
+  const bits = [];
+  if (drift > 0.001) bits.push(`width ${r.w.toFixed(0)} -> 684${drift > 0.10 ? '  ** >10%, check text still fits its boxes **' : ''}`);
+  if (r.offLadder.length) bits.push(`off-ladder type: ${r.offLadder.map((v) => v.toFixed(1)).join(', ')}`);
+  const tag = check ? (r.ok ? 'OK  ' : 'TODO') : (bits.length ? '    ' : 'OK  ');
+  console.log(`  ${tag} ${rel.padEnd(46)} ${bits.join('   ') || 'on the ladder, 684 wide'}`);
 }
