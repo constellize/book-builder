@@ -56,7 +56,12 @@ function main() {
         chapter,
         // The PNGs the manuscript references are "<name>.excalidraw.png".
         out: `${name}.png`,
-        elements: doc.elements || [],
+        // Drop isDeleted elements. Excalidraw keeps them in the file for undo history and
+        // does not render them in the editor, but exportToBlob DOES render them -- so an
+        // undone label reappears in the PNG, overlapping whatever replaced it. That is what
+        // put two copies of the same sentence on codepromptu-stakeholders, and 61 such ghosts
+        // across 17 diagrams. Several "overlapping layout" faults were this, not the artwork.
+        elements: (doc.elements || []).filter((e) => !e.isDeleted),
         appState: {
           viewBackgroundColor: doc.appState?.viewBackgroundColor || '#FFFFFF',
           exportBackground: true,
@@ -64,7 +69,7 @@ function main() {
           theme: 'light',
         },
         files: doc.files || {},
-        count: (doc.elements || []).length,
+        count: (doc.elements || []).filter((e) => !e.isDeleted).length,
       });
     }
   }
