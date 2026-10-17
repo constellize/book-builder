@@ -100,6 +100,15 @@ function finish(file) {
   const nb = bbox(els);
   for (const el of els) { el.x -= nb.x0; el.y -= nb.y0; }
 
+  // Restore the guide to exactly CANVAS_W. The snap above scaled every element, the guide
+  // included, so a 685 -> 684 correction left the guide reading 683.5 -- and a guide that
+  // does not say 684 is worse than none, because it is the number the author checks.
+  const guide = els.find((e) => e.id === 'constellize-canvas-guide');
+  if (guide) {
+    guide.x = 0;
+    guide.width = CANVAS_W;
+  }
+
   fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n');
   return { ...before, applied: true };
 }
