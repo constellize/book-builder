@@ -68,7 +68,9 @@ function finish(file) {
   const b = bbox(els);
   if (!b || b.w <= 0) return null;
 
-  const texts = els.filter((e) => e.type === 'text' && (e.text || '').trim());
+  // isDeleted elements linger in the file after an undo; they render as nothing but were
+  // being reported as off-ladder type, sending the author hunting for text that is not there.
+  const texts = els.filter((e) => e.type === 'text' && !e.isDeleted && (e.text || '').trim());
   if (!texts.length) return null;
 
   const k = CANVAS_W / b.w;
