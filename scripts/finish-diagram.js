@@ -72,7 +72,10 @@ function finish(file) {
   if (!texts.length) return null;
 
   const k = CANVAS_W / b.w;
-  const offLadder = [...new Set(texts.map((t) => t.fontSize))]
+  // Emoji-only labels are icons, not type. They carry no reading weight and holding them to
+  // the ladder just produces noise in every check run.
+  const isEmojiOnly = (t) => !/[A-Za-z0-9]/.test(t.text || '');
+  const offLadder = [...new Set(texts.filter((t) => !isEmojiOnly(t)).map((t) => t.fontSize))]
     .filter((v) => !(Math.round(v) in LADDER) || Math.abs(v - Math.round(v)) > 0.01)
     .sort((a, b2) => a - b2);
   const before = { w: b.w, offLadder, drift: k };
