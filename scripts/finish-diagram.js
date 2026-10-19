@@ -49,15 +49,32 @@ function listAll(dir) {
   });
 }
 
+/**
+ * An element's extent. For arrows and lines this is NOT x .. x+width: `points` are offsets
+ * from (x, y) and may be negative, so an arrow drawn leftwards has its origin at the RIGHT
+ * end. knowledge-evolution-lifecycle has one with points [[0,0], [-224, 75], [-396, -32]] --
+ * it spans 131..527, comfortably inside the canvas, while x+width reported 924 and sent the
+ * author hunting for an overflow that was not there.
+ */
+function extent(e) {
+  if (Array.isArray(e.points) && e.points.length) {
+    const xs = e.points.map((p) => p[0]);
+    const ys = e.points.map((p) => p[1]);
+    return [e.x + Math.min(...xs), e.y + Math.min(...ys),
+            e.x + Math.max(...xs), e.y + Math.max(...ys)];
+  }
+  return [e.x, e.y, e.x + (e.width || 0), e.y + (e.height || 0)];
+}
+
 function bbox(els) {
   const live = els.filter((e) => !e.isDeleted && typeof e.x === 'number');
   if (!live.length) return null;
-  return {
-    x0: Math.min(...live.map((e) => e.x)),
-    y0: Math.min(...live.map((e) => e.y)),
-    w: Math.max(...live.map((e) => e.x + (e.width || 0))) - Math.min(...live.map((e) => e.x)),
-    h: Math.max(...live.map((e) => e.y + (e.height || 0))) - Math.min(...live.map((e) => e.y)),
-  };
+  const b = live.map(extent);
+  const x0 = Math.min(...b.map((v) => v[0]));
+  const y0 = Math.min(...b.map((v) => v[1]));
+  return { x0, y0,
+           w: Math.max(...b.map((v) => v[2])) - x0,
+           h: Math.max(...b.map((v) => v[3])) - y0 };
 }
 
 const SCALE = ['x', 'y', 'width', 'height', 'fontSize', 'strokeWidth', 'baseline'];
