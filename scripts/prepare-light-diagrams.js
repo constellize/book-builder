@@ -94,6 +94,7 @@ function html(count, longEdge) {
   .ok{color:#137333}.bad{color:#c5221f}
 </style>
 <h1>Re-render ${count} diagrams in light theme</h1>
+<p style="color:#666">staged ${new Date().toLocaleString()} &mdash; if that looks old, reload this page before rendering.</p>
 <p>Renders every diagram with the real Excalidraw engine and writes the PNGs straight back
 into <code>images/diagrams/</code>.</p>
 <ol>
@@ -113,7 +114,11 @@ document.getElementById('go').onclick = async () => {
   let root;
   try { root = await window.showDirectoryPicker({ mode: 'readwrite' }); }
   catch { return log('cancelled', 'bad'); }
-  const scenes = await (await fetch('scenes.json')).json();
+  // Cache-bust. Without this the browser re-uses the scenes.json it fetched when the page
+    // first loaded, so clicking render again after restaging silently re-renders the OLD
+    // artwork -- 21 diagrams were written back from stale scenes this way, and the only clue
+    // was that the PNGs did not match their sources.
+    const scenes = await (await fetch('scenes.json?t=' + Date.now(), { cache: 'no-store' })).json();
   let ok = 0, bad = 0;
   for (const s of scenes) {
     try {
