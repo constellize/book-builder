@@ -71,7 +71,7 @@ const { resolveLabel } = B;
  * carry ~59 image references, and a copy editor who is told nothing about them
  * reasonably assumes files are missing and raises a query for each one.
  */
-function buildReadme({ label, date, edition, version, images }) {
+function buildReadme({ label, date, edition, version, images, sources }) {
   // A list, not three consecutive lines: markdown joins consecutive lines into one
   // paragraph, so the three fields rendered as a single run-on sentence.
   return `# The Constellize Method — markdown for copy-editing
@@ -109,7 +109,25 @@ this package**. You do not need them to copy-edit the prose. Where a description
 matters, the typeset PDF shows the figure in place.`}
 
 The descriptive alt text inside an image reference — the part in square brackets —
-is prose and yours to edit. The file path after it is not.
+is prose and yours to edit. The file path after it is not. That alt text becomes the
+printed caption, so it is worth reading against the figure.
+${sources
+  ? `
+## The editable diagram sources
+
+\`${sources.archiveName}\` holds the ${sources.count} Excalidraw sources behind those
+figures, for your design team. Open them at excalidraw.com or in the desktop app.
+
+**Read \`images/diagrams/TYPE-SCALE.md\` before changing one.** Every diagram's content
+is exactly 684 units wide, and that is what makes the type consistent: at that width one
+unit is half a printed point, so Excalidraw's own "S" preset is an 8pt label in every
+figure in the book. Spread a diagram wider and it gets scaled down to fit the column,
+shrinking all of its text — which is the fault this pass existed to fix. The figures were
+reworked one by one to hold that rule, so a change that ignores it will stand out.
+
+You do not need these to copy-edit. They are here so the artwork can be reworked without
+starting from the PNGs.`
+  : ''}
 
 ## What to edit
 
@@ -241,12 +259,61 @@ function buildImageArchive({ contentDir, tag, outgoingDir, bundleName, paths }) 
   return { count: paths.length, archiveName: `${archiveName}.zip`, zipPath, bytes };
 }
 
+/**
+ * Build a separate archive of the EDITABLE diagram sources (.excalidraw), plus the rules
+ * that keep them consistent.
+ *
+ * Separate from the figures for a reason: the PNGs are what the book prints, and a
+ * typesetter needs only those. The sources are for a design team that may want to rework
+ * the artwork -- and reworking it without knowing the canvas rule would undo the whole
+ * pass, because a diagram's printed text size depends on its content width. So the archive
+ * carries TYPE-SCALE.md with it rather than shipping bare JSON.
+ *
+ * Read from the tag like everything else, so the sources match the prose and figures that
+ * ship with them.
+ */
+function buildSourceArchive({ contentDir, tag, outgoingDir, bundleName }) {
+  const archiveName = `${bundleName}-diagram-sources`;
+  const dir = path.join(outgoingDir, archiveName);
+  fs.removeSync(dir);
+  fs.ensureDirSync(dir);
+
+  const listed = execFileSync('git', ['ls-tree', '-r', '--name-only', tag, 'images/diagrams/'],
+    { cwd: contentDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\n').filter(Boolean);
+
+  const wanted = listed.filter((f) =>
+    f.endsWith('.excalidraw') || /(TYPE-SCALE|SHORTCUTS|README)\.md$/.test(f));
+
+  let bytes = 0, sources = 0;
+  for (const rel of wanted) {
+    const dest = path.resolve(dir, rel);
+    if (dest !== dir && !dest.startsWith(dir + path.sep)) {
+      throw new Error(`Source path escapes the archive directory: ${rel}`);
+    }
+    const data = execFileSync('git', ['show', `${tag}:${rel}`],
+      { cwd: contentDir, maxBuffer: 256 * 1024 * 1024 });
+    fs.ensureDirSync(path.dirname(dest));
+    fs.writeFileSync(dest, data);
+    bytes += data.length;
+    if (rel.endsWith('.excalidraw')) sources++;
+  }
+
+  const zipPath = path.join(outgoingDir, `${archiveName}.zip`);
+  fs.removeSync(zipPath);
+  B.zipDir(outgoingDir, archiveName, zipPath);
+
+  console.log(chalk.gray(`  + ${sources} diagram sources (${(bytes / 1024 / 1024).toFixed(1)} MB)`));
+  return { count: sources, archiveName: `${archiveName}.zip`, zipPath, bytes };
+}
+
 function main() {
   program
     .name('package-for-publisher')
     .argument('[contentDir]', 'book content root', '.')
     .option('--round <label>', 'round label; a bare integer becomes round-N')
     .option('--with-images', 'also build a separate archive of the figures the sources reference')
+    .option('--with-sources', 'also build a separate archive of the editable .excalidraw diagram sources')
     .parse();
 
   const opts = program.opts();
@@ -318,14 +385,17 @@ function main() {
       ? buildImageArchive({ contentDir, tag, outgoingDir, bundleName, paths: [...referencedImages].sort() })
       : null;
 
+    const sources = opts.withSources
+      ? buildSourceArchive({ contentDir, tag, outgoingDir, bundleName })
+      : null;
+
     fs.writeFileSync(path.join(bundleDir, 'MANIFEST.TXT'),
       B.renderManifest({ label, tag, commit, date, files }), 'utf8');
     fs.writeFileSync(path.join(bundleDir, 'README.md'),
       buildReadme({
-        label, date,
+        label, date, images, sources,
         edition: readMetadataField(contentDir, tag, 'edition', 'unknown'),
         version: readMetadataField(contentDir, tag, 'version', 'unknown'),
-        images,
       }), 'utf8');
     fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'), B.renderQueries(label), 'utf8');
 
