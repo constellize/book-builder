@@ -2,7 +2,10 @@
 title: "The Constellize Method"
 subtitle: "Building Software Systems from Knowledge"
 author: "Steve Atkinson"
-publisher: "Constellize Press"
+# publisher: cleared 2026-10-20. Spines produces the copyright page and the cover,
+# so the imprint is theirs to state. Leaving "Constellize Press" here put a wrong
+# dc:publisher in the EPUB -- which is what catalogues read -- and printed it on the
+# HTML title page. Set this to the real imprint when they confirm it.
 date: \today
 lang: en-US
 subject: "Software Engineering Methodology"
@@ -56,8 +59,8 @@ disclaimer: "This work is the sole independent work of Steve Atkinson and Conste
 # ISBN and publishing details
 isbn: ""  # To be filled when available
 isbn13: ""  # To be filled when available
-edition: "Author Preview v0.5.2"
-version: "0.5.2"
+edition: "Author Preview v0.6.0"
+version: "0.6.0"
 
 # Technical metadata
 format: "PDF/X-1a"

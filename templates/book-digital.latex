@@ -278,6 +278,12 @@ $if(date)$
 \date{$date$}
 $endif$
 
+% Stamp the edition under the date, matching book-print.latex. Reviewers end up with
+% several drafts open and no way to tell them apart.
+$if(edition)$
+\date{$if(date)$$date$\\[0.8em]$endif$\normalsize\textit{$edition$}}
+$endif$
+
 \begin{document}
 
 % Title page
@@ -285,43 +291,16 @@ $if(title)$
 \maketitle
 $endif$
 
-% Copyright page
-\thispagestyle{empty}
-\vspace*{\fill}
-\begin{center}
-$if(copyright)$
-$copyright$
-$endif$
+% Copyright page -- REMOVED, same as book-print.latex. The publisher supplies it.
+%
+% Deleted rather than commented, and this comment deliberately contains no pandoc
+% variables: pandoc expands them before LaTeX sees the percent signs, so commenting the
+% block broke the build once, and naming a variable inside the explanation then printed
+% that variable's text onto page two. A pandoc template cannot comment out a directive.
+%
+% The edition now prints on the title page instead. To restore the page, take the block
+% from git history; the fields it read are still live in templates/metadata.yaml.
 
-\vspace{1em}
-
-$if(publisher)$
-Published by $publisher$
-$endif$
-
-$if(edition)$
-\vspace{1em}
-$edition$
-$endif$
-
-$if(isbn)$
-\vspace{1em}
-ISBN: $isbn$
-$endif$
-
-\vspace{1em}
-
-$if(license)$
-$license$
-$endif$
-
-$if(disclaimer)$
-\vspace{1em}
-\textit{$disclaimer$}
-$endif$
-\end{center}
-\vspace*{\fill}
-\clearpage
 
 % Table of contents
 $if(toc)$

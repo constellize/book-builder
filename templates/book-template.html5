@@ -475,29 +475,15 @@ $endif$
 $for(author)$
   <p class="author">$author$</p>
 $endfor$
-$if(publisher)$
-  <p class="publisher">$publisher$</p>
-$endif$
-</div>
-
-<!-- Copyright Page -->
-<div class="copyright-page">
 $if(edition)$
   <p class="edition">$edition$</p>
 $endif$
-$if(copyright)$
-  <p class="copyright">$copyright$</p>
-$endif$
-$if(publisher)$
-  <p>Published by $publisher$</p>
-$endif$
-$if(license)$
-  <p class="license">$license$</p>
-$endif$
-$if(disclaimer)$
-  <p class="disclaimer">$disclaimer$</p>
-$endif$
 </div>
+
+<!-- Copyright page removed: the publisher supplies it. The edition moved onto the
+     title page below the author, matching the PDF templates, so a reader can still tell
+     which draft this is. This is HTML, so a real comment is safe here -- unlike the LaTeX
+     templates, where commenting a pandoc directive expands it anyway. -->
 
 $if(toc)$
 <nav id="TOC" role="doc-toc">
