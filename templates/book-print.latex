@@ -250,19 +250,28 @@ $endif$
 \usepackage{fancyhdr}
 \usepackage{truncate}
 
-% Customize chapter titles with automatic numbering
+% Customize chapter titles with automatic numbering.
+%
+% \raggedright is load-bearing. Without it the title is JUSTIFIED across the full measure,
+% and because it is set at \Huge in a 4.75in column most titles wrap to two lines -- so TeX
+% stretches the inter-word spaces of the first line to fill it:
+%
+%     The    Intent-Implementation
+%     Building from                    Knowledge,
+%
+% Body text can absorb that stretch invisibly; a two-word line at 25pt cannot.
 \titleformat{\chapter}[display]
-  {\normalfont\huge\bfseries}
+  {\normalfont\huge\bfseries\raggedright}
   {\chaptertitlename\ \thechapter}
   {20pt}
-  {\Huge}
+  {\Huge\raggedright}
 
 % Customize unnumbered chapter titles (for foreword)
 \titleformat{name=\chapter,numberless}[display]
-  {\normalfont\huge\bfseries}
+  {\normalfont\huge\bfseries\raggedright}
   {}
   {20pt}
-  {\Huge}
+  {\Huge\raggedright}
 
 % Customize section titles
 \titleformat{\section}
@@ -336,6 +345,14 @@ $if(date)$
 \date{$date$}
 $endif$
 
+% Stamp the edition under the date, so a printed copy says which draft it is.
+% Reviewers end up with several of these on a desk and no way to tell them apart --
+% the copyright page used to carry it, and the publisher now supplies that page, so
+% without this the version appears nowhere a reader can see.
+$if(edition)$
+\date{$if(date)$$date$\\[0.8em]$endif$\normalsize\textit{$edition$}}
+$endif$
+
 \begin{document}
 
 % Title page
@@ -343,35 +360,21 @@ $if(title)$
 \maketitle
 $endif$
 
-% Copyright page -- DELIBERATELY NOT RENDERED.
+% Copyright page -- REMOVED. The publisher supplies it.
 %
-% The publisher supplies it. Their production lead, 2026-10-20: "The copyright pages are
-% missing -- we supply them; you don't need to write one." Spines produces the copyright
-% page and the cover files.
+% Their production lead, 2026-10-20: "The copyright pages are missing -- we supply them;
+% you don't need to write one." Spines produces the copyright page and the cover files,
+% for print and ebook both. Ours named a different publisher from theirs.
 %
-% The block below is kept, commented, rather than deleted, because the metadata it reads
-% (copyright, publisher, edition, isbn, license, disclaimer in templates/metadata.yaml) is
-% still live and still stamps the other formats. If this book is ever produced outside that
-% arrangement, uncomment it.
+% DELETED rather than commented, and this comment contains no pandoc variables, because
+% pandoc expands template variables BEFORE LaTeX sees the percent signs. Commenting the
+% block put the disclaimer's continuation lines outside the comment and broke the build.
+% Writing the word for a variable inside THIS comment then leaked that same text onto
+% page two. A pandoc template has no safe way to comment out a directive: remove it.
 %
-% Leaving it rendering would have put TWO copyright pages in the finished book naming
-% DIFFERENT publishers -- ours said "Published by Constellize Press", theirs will carry the
-% real imprint and ISBN.
-%
-% \thispagestyle{empty}
-% \vspace*{\fill}
-% \begin{center}
-% $if(copyright)$ $copyright$ $endif$
-% \vspace{1em}
-% $if(publisher)$ Published by $publisher$ $endif$
-% $if(edition)$ \vspace{1em} $edition$ $endif$
-% $if(isbn)$ \vspace{1em} ISBN: $isbn$ $endif$
-% \vspace{1em}
-% $if(license)$ $license$ $endif$
-% $if(disclaimer)$ \vspace{1em} \textit{$disclaimer$} $endif$
-% \end{center}
-% \vspace*{\fill}
-% \clearpage
+% To restore the page, take the block from git history. The fields it read are still live
+% in templates/metadata.yaml and still stamp other formats. The edition now prints on the
+% title page instead, which is where a reviewer can actually see it.
 
 % Table of contents (no hyperlinks in print version)
 $if(toc)$
