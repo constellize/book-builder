@@ -343,43 +343,35 @@ $if(title)$
 \maketitle
 $endif$
 
-% Copyright page
-\thispagestyle{empty}
-\vspace*{\fill}
-\begin{center}
-$if(copyright)$
-$copyright$
-$endif$
-
-\vspace{1em}
-
-$if(publisher)$
-Published by $publisher$
-$endif$
-
-$if(edition)$
-\vspace{1em}
-$edition$
-$endif$
-
-$if(isbn)$
-\vspace{1em}
-ISBN: $isbn$
-$endif$
-
-\vspace{1em}
-
-$if(license)$
-$license$
-$endif$
-
-$if(disclaimer)$
-\vspace{1em}
-\textit{$disclaimer$}
-$endif$
-\end{center}
-\vspace*{\fill}
-\clearpage
+% Copyright page -- DELIBERATELY NOT RENDERED.
+%
+% The publisher supplies it. Their production lead, 2026-10-20: "The copyright pages are
+% missing -- we supply them; you don't need to write one." Spines produces the copyright
+% page and the cover files.
+%
+% The block below is kept, commented, rather than deleted, because the metadata it reads
+% (copyright, publisher, edition, isbn, license, disclaimer in templates/metadata.yaml) is
+% still live and still stamps the other formats. If this book is ever produced outside that
+% arrangement, uncomment it.
+%
+% Leaving it rendering would have put TWO copyright pages in the finished book naming
+% DIFFERENT publishers -- ours said "Published by Constellize Press", theirs will carry the
+% real imprint and ISBN.
+%
+% \thispagestyle{empty}
+% \vspace*{\fill}
+% \begin{center}
+% $if(copyright)$ $copyright$ $endif$
+% \vspace{1em}
+% $if(publisher)$ Published by $publisher$ $endif$
+% $if(edition)$ \vspace{1em} $edition$ $endif$
+% $if(isbn)$ \vspace{1em} ISBN: $isbn$ $endif$
+% \vspace{1em}
+% $if(license)$ $license$ $endif$
+% $if(disclaimer)$ \vspace{1em} \textit{$disclaimer$} $endif$
+% \end{center}
+% \vspace*{\fill}
+% \clearpage
 
 % Table of contents (no hyperlinks in print version)
 $if(toc)$

@@ -363,7 +363,18 @@ class BookBuilder {
     // templates/copyright-page.md existed all along and was referenced by nothing, with a
     // version hardcoded into it. It is now the source for this, with {{EDITION}} filled
     // from the same metadata.yaml the copyright page of every other format reads.
-    if ((config.outputs[this.options.target] || {}).format === 'epub3') {
+    //
+    // TURNED OFF 2026-10-20. The publisher supplies the copyright page -- their production
+    // lead: "The copyright pages are missing -- we supply them; you don't need to write one."
+    // Spines produces the copyright page and the cover files for both print and ebook.
+    // Shipping ours as well would put two in the finished book naming different publishers:
+    // ours says "Published by Constellize Press", theirs carries the real imprint and ISBN.
+    //
+    // Kept behind a flag rather than deleted, because the arrangement could change and the
+    // metadata it reads is still live. Set SHIP_OWN_COPYRIGHT_PAGE to true to restore it.
+    const SHIP_OWN_COPYRIGHT_PAGE = false;
+    if (SHIP_OWN_COPYRIGHT_PAGE
+        && (config.outputs[this.options.target] || {}).format === 'epub3') {
       const tpl = path.resolve(this.toolsDir, 'templates', 'copyright-page.md');
       if (await fs.pathExists(tpl)) {
         const meta = await fs.readFile(
