@@ -53,8 +53,15 @@ for (const file of listAll(ROOT)) {
 
   const live = els.filter((e) => !e.isDeleted && typeof e.x === 'number');
   if (!live.length) continue;
-  const y0 = Math.min(...live.map((e) => e.y));
-  const y1 = Math.max(...live.map((e) => e.y + (e.height || 0)));
+  // Arrows and lines keep their geometry in `points`, offsets from (x, y) that may be
+  // negative, so y + height is not the extent. Getting this wrong left the guide taller than
+  // the artwork -- knowledge-to-implementation-flow carried 246 units of dead space below
+  // its content, which the author saw as a big bottom margin in the render.
+  const extY = (e) => (Array.isArray(e.points) && e.points.length
+    ? [e.y + Math.min(...e.points.map((p) => p[1])), e.y + Math.max(...e.points.map((p) => p[1]))]
+    : [e.y, e.y + (e.height || 0)]);
+  const y0 = Math.min(...live.map((e) => extY(e)[0]));
+  const y1 = Math.max(...live.map((e) => extY(e)[1]));
 
   // Behind everything, so a click lands on real content rather than the guide.
   doc.elements = [{
