@@ -592,9 +592,17 @@ class BookBuilder {
             // Strip any attribute block the source already carries so the rebuilt
             // heading cannot end up with two of them.
             .replace(/\s*\{[^}]*\}\s*$/, '');
+          // The prose label is for docx ONLY. On the LaTeX targets \appendix is in force,
+          // so the book class already prints "Appendix B" above the chapter title -- adding
+          // the label here too rendered it twice:
+          //
+          //     Appendix B
+          //     Appendix B: A Manifesto for Constellize
+          //
+          // in the heading, the table of contents and the running heads.
           lines[titleIndex] = isDocx
             ? `# Appendix ${appendixLetter}: ${originalTitle} {.unnumbered}`
-            : `# Appendix ${appendixLetter}: ${originalTitle}`;
+            : `# ${originalTitle}`;
         }
       }
       content = lines.join('\n');

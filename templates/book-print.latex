@@ -67,6 +67,18 @@
 \newunicodechar{✅}{\checkmark}
 
 % Define tree drawing characters
+% The main font has no arrow. Verified: AtkinsonHyperlegibleNext-Regular.ttf does not map
+% U+2192, which is why 26 arrows across 12 pages printed as empty boxes. \symbolfont is
+% Menlo, already loaded below for box drawing, and Menlo does map U+2192.
+\newunicodechar{→}{\symbolfont →}
+% ❌ U+274C is an emoji; neither the text font nor Menlo maps it. ✗ U+2717 BALLOT X reads
+% identically in body text and Menlo does map it. This is the counterpart of the ✓ mapping
+% below -- the two appear as a pair in the manuscript.
+\newunicodechar{❌}{\symbolfont ✗}
+\newunicodechar{✗}{\symbolfont ✗}
+\newunicodechar{←}{\symbolfont ←}
+\newunicodechar{↔}{\symbolfont ↔}
+\newunicodechar{⇒}{\symbolfont ⇒}
 \newunicodechar{├}{\symbolfont ├}
 \newunicodechar{─}{\symbolfont ─}
 \newunicodechar{└}{\symbolfont └}
@@ -190,6 +202,18 @@ $endif$
 \makeatother
 
 % Define callout environments with simple titles
+% ---------------------------------------------------------------------------------------
+% CALLOUT BREAKS (publisher review item 2)
+%
+% These boxes must stay breakable -- several run longer than a page -- but nothing governed
+% WHERE they broke, so fragments stranded: a lone "}" opening p. 107, and "tainable as they
+% grow." opening p. 114 as the tail of an info box.
+%
+% `lines before break` refuses a break that would leave fewer than N lines in the current
+% part, so a box either breaks somewhere sensible or moves whole to the next page. Verified
+% as a valid tcolorbox key against this TeX installation before use.
+\tcbset{breakable/.append style={lines before break=4}}
+
 \newtcolorbox{codereference}{
   colback=blue!5!white,
   colframe=blue!75!black,
@@ -246,6 +270,47 @@ $endif$
 }
 
 % Chapter and section styling
+% ---------------------------------------------------------------------------------------
+% FLOAT PLACEMENT (publisher review 2026-10-21, items 1 and 3)
+%
+% The template had no float control at all, so LaTeX deferred figures and dropped them
+% wherever they next fitted -- including into the middle of a breakable callout, and
+% between the two halves of a hyphenated word. Reported cases: Figure 4.3 splitting the
+% "Design Actionable Health Reporting" callout and tearing its footnote URL in half across
+% pp. 104-105; and a full-page figure on p. 34 landing between "Code-" and "Promptu".
+%
+% [section] makes placeins issue a \FloatBarrier at every \section, so a figure can drift
+% within its section but never past it. The fractions make LaTeX place figures on the page
+% that references them rather than banking them for a float page: topfraction raised so a
+% large figure can still sit at the top of a text page, textfraction lowered so little text
+% is required to accompany it, floatpagefraction raised so a float page must be well filled
+% before LaTeX chooses one.
+\usepackage{needspace}  % used by keep-leadin-with-content.lua
+\usepackage[section]{placeins}
+\setcounter{topnumber}{2}
+\setcounter{bottomnumber}{1}
+\setcounter{totalnumber}{3}
+\renewcommand{\topfraction}{0.85}
+\renewcommand{\bottomfraction}{0.5}
+\renewcommand{\textfraction}{0.12}
+\renewcommand{\floatpagefraction}{0.75}
+
+% ---------------------------------------------------------------------------------------
+% WIDOWS, ORPHANS AND BROKEN WORDS (publisher review items 2 and 4)
+%
+% No penalties were set, so LaTeX's defaults (150) applied -- low enough that it would
+% strand a lead-in line such as "The book is organized as follows:" at the foot of p. 32,
+% away from the list it introduces. 12 such cases were measurable in the v0.6.0 proof.
+%
+% \brokenpenalty is the one that matters for the publisher's item 2: it governs a hyphenated
+% word broken across a PAGE, which is what produced "main-/tainable" spanning p. 113-114 and
+% "Code-/Promptu" spanning a full-page figure. At 10000 TeX will not do it at all.
+\widowpenalty=10000
+\clubpenalty=10000
+\displaywidowpenalty=10000
+\brokenpenalty=10000
+
+
 \usepackage{titlesec}
 \usepackage{fancyhdr}
 \usepackage{truncate}

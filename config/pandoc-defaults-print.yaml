@@ -32,6 +32,9 @@ filters:
   - book-builder/templates/filters/minted-filter.lua
   - book-builder/templates/filters/callout-filter-print.lua
   - book-builder/templates/filters/link-filter.lua
+  # Runs after the callout filter so it sees the box as a block and can keep a lead-in
+  # attached to it. Before citeproc, which only rewrites citations.
+  - book-builder/templates/filters/keep-leadin-with-content.lua
   - citeproc
 
 # Metadata
