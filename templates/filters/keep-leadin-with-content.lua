@@ -61,6 +61,12 @@ local function reservation_for(nxt)
   if nxt.t == 'Div' then return 12 end
   if nxt.t == 'RawBlock' and nxt.format == 'latex'
      and nxt.text:match('\\begin%s*{') then return 12 end
+  -- A list carries its own \topsep above the first item, so five lines leaves too little
+  -- for the item itself: "Documenting gaps systematically:" stayed at the foot of p.80
+  -- while its numbered list moved on. Eight covers the skip and a two or three line item.
+  if nxt.t == 'OrderedList' or nxt.t == 'BulletList' or nxt.t == 'DefinitionList' then
+    return 8
+  end
   if nxt.t == 'Figure' then return nil end
   if (nxt.t == 'Para' or nxt.t == 'Plain') and #nxt.content == 1
      and nxt.content[1].t == 'Image' then return nil end

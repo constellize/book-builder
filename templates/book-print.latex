@@ -338,6 +338,20 @@ $endif$
   {20pt}
   {\Huge\raggedright}
 
+% Keep a heading with what follows it.
+%
+% LaTeX already guards against an orphaned heading, but only when a PARAGRAPH follows: it
+% raises \clubpenalty for that paragraph via \@afterheading. When a FIGURE follows instead
+% the guard does not apply, which is how "1.5 The Five Steps of the Constellize Method"
+% ended up as the last line of p.44 with its figure and list on p.45.
+%
+% titlesec calls \sectionbreak and friends immediately before each heading, so reserving
+% space there covers every case regardless of what comes next. A subsubsection needs less:
+% "1.7.1 The Intent Behind CodePromptu" sat second-to-last on p.47 above only a footnote.
+\newcommand{\sectionbreak}{\needspace{7\baselineskip}}
+\newcommand{\subsectionbreak}{\needspace{6\baselineskip}}
+\newcommand{\subsubsectionbreak}{\needspace{5\baselineskip}}
+
 % Customize section titles
 \titleformat{\section}
   {\normalfont\Large\bfseries}
