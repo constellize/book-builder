@@ -388,6 +388,30 @@ class BookBuilder {
       }
     }
 
+    // docx version stamp. The docx writer renders Title/Subtitle/Author from metadata and
+    // stops there -- no date line, no edition -- and alone among the targets it has no
+    // template to add one to: its only hook is --reference-doc, which carries styles, not
+    // content. So the stamp goes in as the first body file, the same mechanism the
+    // copyright page above used.
+    //
+    // Why it is needed at all: removing the copyright page (see above) took away the only
+    // place these three files stated their version. print/digital/web compensated with a
+    // title-page $edition$ line and the EPUB got book-epub.html5, but the .docx targets
+    // rebuilt clean and shipped anonymous -- v0.6.1 went out with no way for a reader to
+    // tell which draft they held.
+    //
+    // It lands after the Word TOC field rather than up in the title block, because the
+    // title block is writer-generated from metadata and nothing can insert into it.
+    if ((config.outputs[this.options.target] || {}).format === 'docx') {
+      const meta = await fs.readFile(
+        path.resolve(this.toolsDir, 'templates', 'metadata.yaml'), 'utf8');
+      const edition = (meta.match(/^edition:\s*"([^"]+)"/m) || [, 'Author Preview'])[1];
+      const dst = path.join(intermediateDir, '000-edition.md');
+      await fs.writeFile(dst, `*${edition}*\n`);
+      allFiles.push(dst);
+      console.log(chalk.gray(`Added edition stamp (${edition})`));
+    }
+
     // Add foreword first if it exists
     if (config.source.foreword) {
       const forewordPath = path.resolve(this.rootDir, config.source.foreword);
@@ -1161,6 +1185,15 @@ class BookBuilder {
     const copyrightFile = path.join(intermediateDir, '000-copyright.md');
     if (await fs.pathExists(copyrightFile)) {
       files.push(copyrightFile);
+    }
+
+    // The docx edition stamp, written by processSourceFiles for the docx targets. It is
+    // here because of the warning above, which it walked straight into: the first cut
+    // added the file and nothing else, the build logged "Added edition stamp" and
+    // "Processing: 000-edition.md", and the finished .docx contained no such text.
+    const editionFile = path.join(intermediateDir, '000-edition.md');
+    if (await fs.pathExists(editionFile)) {
+      files.push(editionFile);
     }
 
     // Add foreword first
