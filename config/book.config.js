@@ -262,8 +262,17 @@ module.exports = {
       pdf: 'book-builder/templates/book-digital.latex',
       print: 'book-builder/templates/book-print.latex',
       web: 'book-builder/templates/book-template.html5',
-      development: 'book-builder/templates/book-template.html5'
-      // epub: pandoc's built-in epub3 template
+      development: 'book-builder/templates/book-template.html5',
+      // Was deliberately absent (pandoc's built-in epub3 template) until the copyright
+      // page came out. That page had been the EPUB's only version string, and unlike the
+      // PDF targets the built-in template has no $edition$ slot, so v0.6.1 shipped with
+      // no way for a reader to tell which draft they held. book-epub.html5 is the built-in
+      // template plus that one block - see the banner at the top of it.
+      //
+      // The .html5 extension is load-bearing, as it is for book-template.html5: .gitignore
+      // ignores *.html as a build output, so a template named .html is untracked and
+      // vanishes on a fresh clone while the config still points at it.
+      epub: 'book-builder/templates/book-epub.html5'
       // docx-digital / docx-print: DELIBERATELY ABSENT. The docx writer has no template
       // mechanism - its equivalent is --reference-doc, declared per target in `outputs`
       // above. Adding an entry here would make generateBook() pass --template to a docx
