@@ -49,7 +49,12 @@ end
 --               Emitting one here only pushes the lead-in around for no benefit.
 --   anything    5 lines: the lead-in plus roughly three of what follows.
 local function reservation_for(nxt)
-  if nxt.t == 'Header' then return 10 end
+  if nxt.t == 'Header' then return 7 end
+  -- A table's header row repeats at the top of each page (longtable). If the table starts
+  -- so near a page foot that its first chunk is empty, the header prints at the top of the
+  -- page AND again above the first row -- which is what put "Dimension / Key Metrics / What
+  -- to Track" twice on p.229 with the intro paragraph between them.
+  if nxt.t == 'Table' then return 10 end
   -- A callout becomes a tcolorbox: a boxed title, padding, and `lines before break=4`
   -- below it. Five lines is not enough to start one, so the box moved to the next page and
   -- left the lead-in behind -- which kept "For Stale Memory Banks...:" stranded on p.146
@@ -58,14 +63,14 @@ local function reservation_for(nxt)
   -- It arrives here as a RawBlock, not a Div: callout-filter-print.lua has already turned
   -- it into LaTeX by the time this filter runs. Probing with `-t native` shows a Div and is
   -- misleading, because that filter only converts when the target is LaTeX.
-  if nxt.t == 'Div' then return 12 end
+  if nxt.t == 'Div' then return 9 end
   if nxt.t == 'RawBlock' and nxt.format == 'latex'
-     and nxt.text:match('\\begin%s*{') then return 12 end
+     and nxt.text:match('\\begin%s*{') then return 9 end
   -- A list carries its own \topsep above the first item, so five lines leaves too little
   -- for the item itself: "Documenting gaps systematically:" stayed at the foot of p.80
   -- while its numbered list moved on. Eight covers the skip and a two or three line item.
   if nxt.t == 'OrderedList' or nxt.t == 'BulletList' or nxt.t == 'DefinitionList' then
-    return 8
+    return 6
   end
   if nxt.t == 'Figure' then return nil end
   if (nxt.t == 'Para' or nxt.t == 'Plain') and #nxt.content == 1
@@ -77,7 +82,13 @@ function Blocks(blocks)
   local out = pandoc.List()
   for i, blk in ipairs(blocks) do
     local nxt = blocks[i + 1]
-    if nxt and ends_with_colon(blk) then
+    -- Skip the reservation when a heading sits immediately before: titlesec already reserved
+    -- space for that heading, and asking again here CHAINS the two. That is what left
+    -- headings alone at the foot of a page with a large gap below -- the heading placed on
+    -- its 7 reserved lines, then the lead-in demanded 8 more for its list, did not get them,
+    -- and took the whole paragraph to the next page. p.130 was 12% full because of this.
+    local after_heading = i > 1 and blocks[i - 1].t == 'Header'
+    if nxt and not after_heading and ends_with_colon(blk) then
       local n = reservation_for(nxt)
       if n then
         out:insert(pandoc.RawBlock('latex', '\\needspace{' .. n .. '\\baselineskip}'))

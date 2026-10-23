@@ -30,11 +30,14 @@ number-sections: true
 filters:
   - pandoc-crossref
   - book-builder/templates/filters/minted-filter.lua
+  # BEFORE the callout filter, deliberately. That filter turns a callout Div into a LaTeX
+  # RawBlock, and once it has, the lead-ins INSIDE the callout are no longer reachable as
+  # blocks -- which is why "Code and repository links:" stayed stranded at the foot of p.16
+  # while every lead-in outside a box was protected. Running first means callouts are still
+  # Divs, so their contents are walked too.
+  - book-builder/templates/filters/keep-leadin-with-content.lua
   - book-builder/templates/filters/callout-filter-print.lua
   - book-builder/templates/filters/link-filter.lua
-  # Runs after the callout filter so it sees the box as a block and can keep a lead-in
-  # attached to it. Before citeproc, which only rewrites citations.
-  - book-builder/templates/filters/keep-leadin-with-content.lua
   - citeproc
 
 # Metadata

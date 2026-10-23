@@ -286,6 +286,14 @@ $endif$
 % is required to accompany it, floatpagefraction raised so a float page must be well filled
 % before LaTeX chooses one.
 \usepackage{needspace}  % used by keep-leadin-with-content.lua
+% Figures default to [!ht]: placed where they are referenced if at all possible, rather
+% than deferred. Deferral is what let a figure drift INTO a breakable callout and split it
+% from its own footnote -- Figure 5.4 on p.152 and Figure 7.6 on p.205 both landed between
+% a box and its footnote marker. The "!" tells LaTeX to ignore its usual size restrictions
+% when deciding, so a tall figure still places rather than being banked for later.
+\usepackage{float}
+\floatplacement{figure}{!ht}
+
 \usepackage[section]{placeins}
 \setcounter{topnumber}{2}
 \setcounter{bottomnumber}{1}
@@ -363,8 +371,28 @@ $endif$
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[LE,RO]{\thepage}
-\fancyhead[LO]{\nouppercase{\leftmark}}
-\fancyhead[RE]{\nouppercase{\rightmark}}
+% Truncate the running head so it can never reach the page number. The truncate package
+% was already loaded for this and never used: "Chapter 7. Operational Resilience and Site
+% Reliability with Constellize" ran the full measure and pushed the folio off the page
+% entirely. 0.78 leaves room for a three-digit number plus a gap.
+%
+% This is the safety net, not the fix — over-long titles are shortened at source as well,
+% because a truncated running head with an ellipsis is still a defect, just a tidier one.
+% Chapter on the VERSO, section on the RECTO -- the convention LaTeX's own book class
+% encodes:
+%
+%     \@evenhead{\thepage \hfil \leftmark}     verso:  page ... CHAPTER
+%     \@oddhead {\rightmark \hfil \thepage}    recto:  SECTION ... page
+%
+% where \leftmark is the chapter and \rightmark the section. This template had the two
+% marks swapped, putting the chapter on the recto. A reader opening a spread should see the
+% chapter on the left and their position within it on the right: broad to specific.
+%
+% It also put the long strings on the wrong side. Chapter titles are the long ones, and on
+% the recto they shared the line with the folio -- which is how "Chapter 7. Operational
+% Resilience and Site Reliability with Constellize" pushed the page number off the page.
+\fancyhead[RE]{\truncate{0.78\headwidth}{\nouppercase{\leftmark}}}
+\fancyhead[LO]{\truncate{0.78\headwidth}{\nouppercase{\rightmark}}}
 \renewcommand{\headrulewidth}{0.4pt}
 
 % Fix header height warning
