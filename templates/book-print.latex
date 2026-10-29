@@ -419,6 +419,25 @@ $endif$
 \usepackage{xurl}
 \usepackage{url}
 
+% ...but "any character" includes letters, so a URL breaks mid-word. The publisher's
+% round-6 proof showed /implement-actionable-health-reporting split as "-h" / "ealth-
+% reporting" in a footnote on p.105, which reads as a typo rather than a line break.
+%
+% Plain `url` is no good either: its \UrlBigBreaks nominally handles the hyphen, but a
+% slug like achieve-documentation-completeness does not break at its hyphens in practice
+% and simply overruns -- measured at 31.6pt past a 1.8in measure, which is the fault xurl
+% was brought in to cure.
+%
+% So: structural characters AND the hyphen, but no letters. Breaks land at `/`, `.` and
+% `-`, never inside a word. Measured across both of the book's longest prompt URLs at
+% 1.8in, 2.2in and 3.8in measures: zero overfull boxes at every width, where structural-
+% without-hyphen overran at the two narrow ones. The footnote measure is ~3.8in, where
+% the p.105 URL now breaks as "...implement-actionable-" / "health-reporting".
+%
+% Must come after xurl, which sets \UrlBreaks at load.
+\def\UrlBreaks{\do\.\do\@\do\\\do\/\do\!\do\_\do\|\do\;\do\>\do\]%
+  \do\)\do\,\do\?\do\&\do\'\do+\do\=\do\#\do\:\do\-}
+
 % Bibliography
 $if(natbib)$
 \usepackage{natbib}
