@@ -14,6 +14,8 @@ const os = require('os');
 const path = require('path');
 const { readOverfullVboxes } = require('../verify-pdf');
 
+const VB = 'Overfull \\vbox (9.0pt too high) has occurred while \\output is active [3]';
+
 describe('readOverfullVboxes', () => {
   let dir, pdf, log;
   beforeEach(() => {
@@ -33,12 +35,33 @@ describe('readOverfullVboxes', () => {
     fs.writeFileSync(log, 'Overfull \\vbox (9.0pt too high) has occurred while \\output is active [3]');
     const old = new Date(Date.now() - 3600e3);
     fs.utimesSync(log, old, old);
-    expect(readOverfullVboxes(pdf).measured).toBe(false);
+    expect(readOverfullVboxes(pdf, { pdfPages: 7 }).measured).toBe(false);
+  });
+
+  test('an empty or truncated log is not measured, not zero', () => {
+    fs.writeFileSync(log, '');
+    expect(readOverfullVboxes(pdf, { pdfPages: 7 }).measured).toBe(false);
+    fs.writeFileSync(log, VB);
+    expect(readOverfullVboxes(pdf, { pdfPages: 7 }).measured).toBe(false);
+  });
+
+  test('a log whose page count differs from the PDF is not measured', () => {
+    fs.writeFileSync(log, VB + '\nOutput written on x.pdf (7 pages, 100 bytes).\n');
+    const r = readOverfullVboxes(pdf, { pdfPages: 8 });
+    expect(r.measured).toBe(false);
+    expect(r.reason).toMatch(/7 pages but the PDF has 8/);
+  });
+
+  test('a log much NEWER than the PDF is not measured either', () => {
+    fs.writeFileSync(log, VB + '\nOutput written on x.pdf (7 pages, 100 bytes).\n');
+    const future = new Date(Date.now() + 3600e3);
+    fs.utimesSync(log, future, future);
+    expect(readOverfullVboxes(pdf, { pdfPages: 7 }).measured).toBe(false);
   });
 
   test('a current log is parsed', () => {
-    fs.writeFileSync(log, 'Overfull \\vbox (9.0pt too high) has occurred while \\output is active [3]');
-    expect(readOverfullVboxes(pdf)).toMatchObject({ measured: true, boxes: [{ page: 3, points: 9 }] });
+    fs.writeFileSync(log, VB + '\nOutput written on x.pdf (7 pages, 100 bytes).\n');
+    expect(readOverfullVboxes(pdf, { pdfPages: 7 })).toMatchObject({ measured: true, boxes: [{ page: 3, points: 9 }] });
   });
 });
 
@@ -70,4 +93,9 @@ const hasXelatex = !spawnSync('xelatex', ['--version'], { env }).error;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('an empty-bracket warning before any page is shipped has page null, not a guess', () => {
+  expect(parseOverfullVboxes('Overfull \\vbox (8.0pt too high) has occurred while \\output is active []'))
+    .toEqual([{ page: null, points: 8 }]);
 });

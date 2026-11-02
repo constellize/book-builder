@@ -18,7 +18,8 @@ export PATH
 xelatex "$@"
 status=$?
 if [ -n "$XELATEX_LOG_DEST" ] && [ -n "$outdir" ]; then
-  log=$(ls "$outdir"/*.log 2>/dev/null | head -n 1)
-  [ -n "$log" ] && cp "$log" "$XELATEX_LOG_DEST"
+  # pandoc's input is always input.tex, so its log is input.log. Take that one by name,
+  # never "the first *.log": a second log in the directory must not be copied by mistake.
+  [ -f "$outdir/input.log" ] && cp "$outdir/input.log" "$XELATEX_LOG_DEST"
 fi
 exit $status

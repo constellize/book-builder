@@ -65,7 +65,7 @@ function parseOverfullVboxes(logText) {
     const explicit = /has occurred while \\output is active \[(\d+)/.exec(m[3]);
     let page = null;
     if (explicit) page = parseInt(explicit[1], 10);
-    else if (/has occurred while \\output is active \[\]/.test(m[3])) page = lastShipped + 1;
+    else if (/has occurred while \\output is active \[\]/.test(m[3])) page = lastShipped > 0 ? lastShipped + 1 : null;
     out.push({ page, points });
   }
   return out;
@@ -74,16 +74,30 @@ function parseOverfullVboxes(logText) {
 // build-book.js keeps the log beside the PDF as <name>.xelatex.log. Returns
 // {measured:false, reason} when it cannot be used: absent or stale is "not measured",
 // never "zero overfull boxes".
-function readOverfullVboxes(pdfPath) {
+function readOverfullVboxes(pdfPath, { pdfPages } = {}) {
   const logPath = pdfPath.replace(/\.pdf$/, '.xelatex.log');
+  const no = (reason) => ({ measured: false, reason });
   if (!fs.existsSync(logPath)) {
-    return { measured: false, reason: `no XeLaTeX log at ${logPath} (rebuild with the current build-book.js)` };
+    return no(`no XeLaTeX log at ${logPath} (rebuild with the current build-book.js)`);
   }
-  // The log is written during the build, just before the PDF is finalised.
-  if (fs.statSync(logPath).mtimeMs < fs.statSync(pdfPath).mtimeMs - 120000) {
-    return { measured: false, reason: `XeLaTeX log ${logPath} is older than the PDF; it is from a different build` };
+  // The log is written during the build, just before the PDF is finalised. A log far from
+  // the PDF in EITHER direction belongs to a different build.
+  if (Math.abs(fs.statSync(logPath).mtimeMs - fs.statSync(pdfPath).mtimeMs) > 120000) {
+    return no(`XeLaTeX log ${logPath} is more than 2 minutes away from the PDF in time; it is from a different build`);
   }
-  return { measured: true, boxes: parseOverfullVboxes(fs.readFileSync(logPath, 'utf8')), logPath };
+  const text = fs.readFileSync(logPath, 'utf8');
+  // A complete log ends "Output written on ... (N pages". A truncated or empty log would
+  // otherwise parse to zero boxes and read as clean; a log from another file (or the
+  // wrong .log in the temp dir) will not have the PDF's page count.
+  const done = /Output written on [^]*?\((\d+) pages?/.exec(text);
+  if (!done) return no(`XeLaTeX log ${logPath} is incomplete (no "Output written" line)`);
+  const pages = pdfPages !== undefined ? pdfPages
+    : parseInt((run('pdfinfo', [pdfPath]).match(/^Pages:\s*(\d+)/m) || [])[1], 10);
+  if (!(pages > 0)) return no('could not read the PDF page count to confirm the log matches it');
+  if (parseInt(done[1], 10) !== pages) {
+    return no(`XeLaTeX log says ${done[1]} pages but the PDF has ${pages}; the log is not from this PDF`);
+  }
+  return { measured: true, boxes: parseOverfullVboxes(text), logPath };
 }
 
 function checkPdf(file, { expectPrint }) {

@@ -939,8 +939,25 @@ class BookBuilder {
       // pandoc runs xelatex in a temp directory it deletes, taking the log with it. The
       // log is the only place Overfull \vbox is reported, so for xelatex builds the
       // engine is a wrapper that copies the log beside the PDF. verify-pdf.js reads it.
+      // The wrapper is a measurement aid, never a build dependency: if it is not
+      // executable (lost exec bit via zip/copy/core.fileMode=false, partial checkout) fall
+      // back to plain xelatex. The PDF still builds; verify-pdf reports NOT MEASURED.
+      // The wrapper is POSIX sh, so Windows takes the fallback too.
+      let wrapperPath = null;
       if (outputConfig.engine === 'xelatex') {
-        pandocArgs.push(`--pdf-engine="${path.join(__dirname, 'lib', 'xelatex-keep-log', 'xelatex')}"`);
+        const candidate = path.join(__dirname, 'lib', 'xelatex-keep-log', 'xelatex');
+        try {
+          await fs.access(candidate, fs.constants.X_OK);
+          if (process.platform === 'win32') throw new Error('sh wrapper unsupported on Windows');
+          wrapperPath = candidate;
+        } catch (e) {
+          console.log(chalk.yellow(
+            `⚠️  XeLaTeX log wrapper unusable (${e.message}); building with plain xelatex. ` +
+            `Overfull \\vbox will be reported as NOT MEASURED.`));
+        }
+      }
+      if (wrapperPath) {
+        pandocArgs.push(`--pdf-engine="${wrapperPath}"`);
       } else {
         pandocArgs.push(`--pdf-engine=${outputConfig.engine}`);
       }
