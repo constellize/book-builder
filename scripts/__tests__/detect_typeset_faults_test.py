@@ -18,13 +18,10 @@ SPEC.loader.exec_module(mod)
 BOOK = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 PDF = os.path.join(BOOK, "publisher/round-7/outgoing/constellize-book-round-7-print-v0.6.3.pdf")
 
-pytestmark = pytest.mark.skipif(
-    not os.path.exists(PDF),
-    reason=f"fixture PDF absent (gitignored, 105MB): {PDF}")
-
-
 @pytest.fixture(scope="module")
 def faults():
+    if not os.path.exists(PDF):
+        pytest.skip(f"fixture PDF absent (gitignored, 105MB): {PDF}")
     return mod.find_faults(PDF)
 
 
@@ -57,3 +54,29 @@ def test_p215_is_figure_in_callout_not_orphan_tail(faults):
     # p215: the caption comes first and the displaced footnote after it.
     assert any(x["page"] == 215 for x in faults["1_figure_in_callout"])
     assert not any(x["page"] == 215 for x in faults["2_orphan_tail"])
+
+
+def _pages(faults, key):
+    return {x["page"] for x in faults[key]}
+
+
+def test_exact_class_1_pages(faults):
+    assert _pages(faults, "1_figure_in_callout") == {215}
+
+
+def test_exact_class_2_pages(faults):
+    assert _pages(faults, "2_orphan_tail") == {80, 105, 108, 112, 141}
+
+
+def test_known_false_positives_stay_clean(faults):
+    # p35/p49/p100 follow a page ending in a complete, unpunctuated footnote URL; an
+    # earlier "previous page contains http" rule falsely flagged them.
+    for key in ("1_figure_in_callout", "2_orphan_tail"):
+        assert not ({35, 49, 100} & _pages(faults, key))
+
+
+# These do not need the fixture PDF, so they must run even when it is absent.
+@pytest.mark.parametrize("path", ["/nonexistent/nope.pdf", __file__])
+def test_unreadable_pdf_raises_instead_of_reporting_zero(path):
+    with pytest.raises(RuntimeError):
+        mod.find_faults(path)

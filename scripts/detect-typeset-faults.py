@@ -28,12 +28,18 @@ KEYS = ('1_figure_in_callout', '2_orphan_tail', '3_word_across_figure',
 
 
 def extract_pages(pdf):
-    raw = subprocess.run(['pdftotext', '-layout', pdf, '-'], capture_output=True, text=True).stdout
+    r = subprocess.run(['pdftotext', '-layout', pdf, '-'], capture_output=True, text=True)
+    # An unreadable PDF must fail loudly: empty output would otherwise score as "0 faults".
+    if r.returncode != 0:
+        raise RuntimeError(f'pdftotext failed on {pdf!r} (exit {r.returncode}): {r.stderr.strip()}')
+    raw = r.stdout
     pages = raw.split('\f')
     # pdftotext ends every page, including the last, with a form feed, so the split leaves a
     # trailing empty segment that is not a page.
     if pages and not pages[-1].strip():
         pages.pop()
+    if not pages:
+        raise RuntimeError(f'no pages extracted from {pdf!r}; refusing to report zero faults')
     return pages
 
 
@@ -132,6 +138,7 @@ def find_faults(pdf_path):
             seen.add(sig); uniq.append(f)
         findings[k] = uniq
 
+    assert N > 0
     findings['page_count'] = N
     return findings
 
