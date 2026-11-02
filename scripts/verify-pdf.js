@@ -40,6 +40,36 @@ function countOccurrences(buf, needle) {
   return c;
 }
 
+// Overfull \vbox: a box taller than the page's text block. A breakable=false tcolorbox that
+// does not fit does not split, it runs off the bottom, and neither the xMax check nor the
+// text-based fault detector can see that. Only the XeLaTeX log reports it, and only as
+// "Overfull \vbox (12.5pt too high) has occurred while \output is active [184]".
+// (Overfull \hbox is a different, horizontal fault and is ignored here.)
+const OVERFULL_VBOX_TOLERANCE_PT = 5;
+
+function parseOverfullVboxes(logText) {
+  const out = [];
+  const re = /Overfull \\vbox \(([\d.]+)pt too high\) has occurred while \\output is active \[(\d+)/g;
+  let m;
+  while ((m = re.exec(logText))) out.push({ page: parseInt(m[2], 10), points: parseFloat(m[1]) });
+  return out;
+}
+
+// build-book.js keeps the log beside the PDF as <name>.xelatex.log. Returns
+// {measured:false, reason} when it cannot be used: absent or stale is "not measured",
+// never "zero overfull boxes".
+function readOverfullVboxes(pdfPath) {
+  const logPath = pdfPath.replace(/\.pdf$/, '.xelatex.log');
+  if (!fs.existsSync(logPath)) {
+    return { measured: false, reason: `no XeLaTeX log at ${logPath} (rebuild with the current build-book.js)` };
+  }
+  // The log is written during the build, just before the PDF is finalised.
+  if (fs.statSync(logPath).mtimeMs < fs.statSync(pdfPath).mtimeMs - 120000) {
+    return { measured: false, reason: `XeLaTeX log ${logPath} is older than the PDF; it is from a different build` };
+  }
+  return { measured: true, boxes: parseOverfullVboxes(fs.readFileSync(logPath, 'utf8')), logPath };
+}
+
 function checkPdf(file, { expectPrint }) {
   const findings = [];
   const add = (sev, rule, msg, detail) => findings.push({ sev, rule, msg, detail });
@@ -176,6 +206,29 @@ function checkPdf(file, { expectPrint }) {
     }
   }
 
+  // --- boxes running off the bottom of the page ----------------------------------
+  // Same 5pt tolerance convention as the horizontal check above.
+  if (expectPrint) {
+    const r = readOverfullVboxes(file);
+    if (!r.measured) {
+      add('warning', 'overfull-vbox-not-measured',
+        `NOT MEASURED: ${r.reason}. This is not a clean result.`);
+    } else {
+      const bad = r.boxes.filter((b) => b.points >= OVERFULL_VBOX_TOLERANCE_PT)
+        .sort((a, b) => b.points - a.points);
+      if (bad.length) {
+        add('warning', 'overfull-vbox',
+          `${bad.length} Overfull \\vbox of ${OVERFULL_VBOX_TOLERANCE_PT}pt or more ` +
+          `(${r.boxes.length} in the log in total)`,
+          bad.slice(0, 5).map((b) => `  p${b.page}  ${b.points.toFixed(1)}pt too high`).join('\n'));
+      } else {
+        add('info', 'overfull-vbox',
+          `0 Overfull \\vbox of ${OVERFULL_VBOX_TOLERANCE_PT}pt or more ` +
+          `(${r.boxes.length} in the log in total)`);
+      }
+    }
+  }
+
   add('info', 'summary',
     `${pages}pp, ${size}, subtype=${subtype || 'none'}, ` +
     `RGB=${rgbRefs} CMYK=${cmykRefs}, tagged=${tagged ? 'yes' : 'no'}`);
@@ -288,7 +341,7 @@ function checkTypesetFaults(pdfPath, baselinePath, { target = 'print' } = {}) {
 
 const describeFinding = (f) => `${f.cls.replace('_', ' ')}  p${f.page}  ${f.kind}`;
 
-module.exports = { checkPdf, compareToBaseline, checkTypesetFaults };
+module.exports = { checkPdf, parseOverfullVboxes, readOverfullVboxes, compareToBaseline, checkTypesetFaults };
 
 if (require.main === module) {
   // The baseline is per book and tracked with it. Override with TYPESET_BASELINE.
@@ -339,6 +392,7 @@ if (require.main === module) {
     }
 
     for (const f of findings) {
+      if (f.rule === 'overfull-vbox-not-measured') notMeasured = true;
       if (f.sev === 'error') { errors++; console.log(`  ${RED}ERROR${RST}   ${f.rule} — ${f.msg}`); }
       else if (f.sev === 'warning') { warnings++; console.log(`  ${YEL}warning${RST} ${f.rule} — ${f.msg}`); }
       else console.log(`  ${DIM}info    ${f.rule} — ${f.msg}${RST}`);
@@ -353,7 +407,7 @@ if (require.main === module) {
   }
   console.log(`${GRN}No conformance errors${RST}${warnings ? `, ${warnings} warning(s)` : ''}`);
 if (notMeasured) {
-  console.log(`${YEL}Typeset faults were NOT MEASURED on this build (see above) -- ` +
+  console.log(`${YEL}Typeset faults or vertical overflow were NOT MEASURED on this build (see above) -- ` +
     `"no conformance errors" does not cover them.${RST}`);
 }
 }

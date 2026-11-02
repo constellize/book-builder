@@ -1,0 +1,24 @@
+#!/bin/sh
+# pandoc --pdf-engine wrapper (must be named `xelatex`: pandoc only accepts known engine
+# names, judged by basename): runs xelatex unchanged, then copies its .log out of pandoc's
+# temp directory (which pandoc deletes) to $XELATEX_LOG_DEST. pandoc runs the engine more
+# than once; the last run's log wins, which is the one that produced the final PDF.
+# Exit status is xelatex's own. Without XELATEX_LOG_DEST this is a plain pass-through.
+outdir=""
+prev=""
+for a in "$@"; do
+  case "$prev" in -output-directory|--output-directory) outdir="$a" ;; esac
+  case "$a" in -output-directory=*|--output-directory=*) outdir="${a#*=}" ;; esac
+  prev="$a"
+done
+# Run the REAL xelatex: drop this directory from PATH so we do not call ourselves.
+here=$(cd "$(dirname "$0")" && pwd)
+PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$here" | paste -sd: -)
+export PATH
+xelatex "$@"
+status=$?
+if [ -n "$XELATEX_LOG_DEST" ] && [ -n "$outdir" ]; then
+  log=$(ls "$outdir"/*.log 2>/dev/null | head -n 1)
+  [ -n "$log" ] && cp "$log" "$XELATEX_LOG_DEST"
+fi
+exit $status

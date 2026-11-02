@@ -936,7 +936,14 @@ class BookBuilder {
       pandocArgs.push(
         `--defaults=${path.resolve(this.rootDir, defaultsFile)}`
       );
-      pandocArgs.push(`--pdf-engine=${outputConfig.engine}`);
+      // pandoc runs xelatex in a temp directory it deletes, taking the log with it. The
+      // log is the only place Overfull \vbox is reported, so for xelatex builds the
+      // engine is a wrapper that copies the log beside the PDF. verify-pdf.js reads it.
+      if (outputConfig.engine === 'xelatex') {
+        pandocArgs.push(`--pdf-engine="${path.join(__dirname, 'lib', 'xelatex-keep-log', 'xelatex')}"`);
+      } else {
+        pandocArgs.push(`--pdf-engine=${outputConfig.engine}`);
+      }
       pandocArgs.push(`--pdf-engine-opt=-shell-escape`); // Required for Minted syntax highlighting
       pandocArgs.push(`--dpi=${outputConfig.dpi}`);
 
@@ -1083,7 +1090,10 @@ class BookBuilder {
           venvPath + ':' +
           process.env.PATH +
           ":/usr/local/texlive/2025/bin/universal-darwin:/usr/local/texlive/2024/bin/universal-darwin:/usr/local/texlive/2023/bin/universal-darwin";
-        execOptions.env = { ...process.env, PATH: extendedPath };
+        execOptions.env = { ...process.env, PATH: extendedPath,
+          XELATEX_LOG_DEST: outputPath.replace(/\.pdf$/, '.xelatex.log') };
+        // A log left by an earlier build must not be read as this build's.
+        await fs.remove(execOptions.env.XELATEX_LOG_DEST);
       }
 
       execSync(pandocCommand, execOptions);
