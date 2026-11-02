@@ -47,10 +47,10 @@ const fillerFile = (name, n) =>
       `Filler paragraph number ${i} with enough words to take a couple of lines of the measure so that the page fills predictably.`
     ).join('\n\n'));
 
-async function build(fixture, n) {
-  const base = `${fixture.replace(/\.md$/, '')}-${n}`;
+async function build(fixture, n, transform = x => x, tag = '') {
+  const base = `${fixture.replace(/\.md$/, '')}${tag}-${n}`;
   const md = path.join(tmp, `${base}.md`), pdf = path.join(tmp, `${base}.pdf`);
-  fs.writeFileSync(md, fillerFile(fixture, n));
+  fs.writeFileSync(md, transform(fillerFile(fixture, n)));
   await run('pandoc', [md, `--defaults=${DEFAULTS}`, `--template=${TEMPLATE}`, '-o', pdf],
     { cwd: BOOK_ROOT, env: ENV, maxBuffer: 64 << 20 });
   const text = (await run('pdftotext', ['-layout', pdf, '-'], { env: ENV, maxBuffer: 64 << 20 })).stdout;
@@ -70,8 +70,12 @@ maybe('longtable head never ships without a body', () => {
   // 6-row table. Before the fix, 4 of these 14 (n=15,17,18,19) produced the ghost.
   const SWEEP = Array.from({ length: 14 }, (_, i) => 12 + i);
 
-  test('no page prints a table head above its lead-in, and none prints a head with no body', async () => {
-    const results = await Promise.all(SWEEP.map(async n => ({ n, pages: await build('table-at-page-boundary.md', n) })));
+  // The same table behind a fenced Div, which is how a crossref wrapper or a size switch
+  // reaches the filter. The filter must look through it, or the lazy \\needspace returns.
+  const wrapInDiv = md => md.replace(/^(\| Factor[\s\S]*?\n)\n(A closing)/m, '::: {.tablebox}\n$1:::\n\n$2');
+
+  async function ghostFaults(transform, tag) {
+    const results = await Promise.all(SWEEP.map(async n => ({ n, pages: await build('table-at-page-boundary.md', n, transform, tag) })));
     const faults = [];
     for (const { n, pages } of results) {
       expect(tablePages(pages).length).toBeGreaterThan(0); // the table was actually rendered
@@ -82,7 +86,17 @@ maybe('longtable head never ships without a body', () => {
         if (L >= 0 && H < L) faults.push(`n=${n} p${i + 1}: head printed above its lead-in`);
       });
     }
-    expect(faults).toEqual([]);
+    return faults;
+  }
+
+  test('no page prints a table head above its lead-in, and none prints a head with no body', async () => {
+    expect(await ghostFaults(x => x, '')).toEqual([]);
+  });
+
+  test('the same holds when the table sits inside a Div wrapper', async () => {
+    const wrapped = wrapInDiv(fillerFile('table-at-page-boundary.md', 0));
+    expect(wrapped).toMatch(/::: \{\.tablebox\}/); // the wrapper really was applied
+    expect(await ghostFaults(wrapInDiv, '-div')).toEqual([]);
   });
 
   test('a table that genuinely breaks still repeats its head on the continuation page', async () => {
@@ -99,5 +113,29 @@ maybe('longtable head never ships without a body', () => {
         expect(`n=${n} p${i + 1}: ${BODY.test(body[1] || '') ? 'body follows' : 'NO body after head: ' + body[1]}`).toMatch(/body follows/);
       });
     }
+  });
+});
+
+// The contents page: a three-digit page number against a title long enough to fill its line.
+// The book class sizes the number box for two digits; three overflowed it and the number was
+// set hard against the last word ("...Systematic Planning189") with no leaders.
+maybe('contents page numbers', () => {
+  jest.setTimeout(600000);
+  beforeAll(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tocnum-')); });
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('a three-digit page number never touches its title and keeps its leader dots', async () => {
+    const pages = await build('toc-three-digit-page.md', 0);
+    const toc = pages.find(t => /Contents/.test(t) && /Systematic/.test(t));
+    expect(toc).toBeDefined();
+    const ls = lines(toc);
+    const i = ls.findIndex(l => /Systematic/.test(l));
+    // The entry may wrap; gather it up to the line that carries the page number.
+    const entry = [];
+    for (let k = i; k < ls.length && entry.length < 3; k++) { entry.push(ls[k]); if (/\d{3}$/.test(ls[k])) break; }
+    const last = entry[entry.length - 1];
+    expect(last).toMatch(/\d{3}$/);                  // a three-digit number is there
+    expect(last).not.toMatch(/[A-Za-z]\d{3}$/);      // not set against the last word
+    expect(last).toMatch(/\. \. \./);                // and the leader run survives
   });
 });

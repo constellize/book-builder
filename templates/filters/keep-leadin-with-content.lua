@@ -78,6 +78,25 @@ local function reservation_for(nxt)
   return 5
 end
 
+-- Does this block start with a table, looking through wrappers?
+--
+-- A table is not always a bare Table block: a Div (a crossref wrapper, a size switch, any
+-- fenced div) can hold it, and a RawBlock can already be a longtable. Matching only
+-- `t == 'Table'` would give a wrapped table the lazy \needspace and bring the ghost head
+-- back. Only what comes FIRST inside a wrapper counts -- that is what sits directly under
+-- the lead-in; a table further down a Div has other content between it and the lead-in.
+local function starts_with_table(blk)
+  if blk.t == 'Table' then return true end
+  if blk.t == 'Div' then
+    local first = blk.content[1]
+    return first ~= nil and starts_with_table(first)
+  end
+  if blk.t == 'RawBlock' and blk.format == 'latex' then
+    return blk.text:match('^%s*\\begin%s*{longtable}') ~= nil
+  end
+  return false
+end
+
 function Blocks(blocks)
   local out = pandoc.List()
   for i, blk in ipairs(blocks) do
@@ -89,14 +108,24 @@ function Blocks(blocks)
     -- and took the whole paragraph to the next page. p.130 was 12% full because of this.
     local after_heading = i > 1 and blocks[i - 1].t == 'Header'
     if nxt and not after_heading and ends_with_colon(blk) then
-      local n = reservation_for(nxt)
+      local is_table = starts_with_table(nxt)
+      -- A table, bare or behind a wrapper, reserves 10 lines. reservation_for would answer 9
+      -- for a Div (the callout figure) and 5 for a raw block.
+      local n = is_table and 10 or reservation_for(nxt)
       if n then
-        -- A table needs the EAGER form. \needspace is lazy, and in front of a longtable the
-        -- break it defers is taken inside longtable's output routine, which copies the table
-        -- head to the top of the next page AHEAD of this lead-in. See \needspaceNow in
-        -- book-print.latex. Every other follower keeps the lazy \needspace unchanged.
-        local cmd = (nxt.t == 'Table') and 'needspaceNow' or 'needspace'
-        out:insert(pandoc.RawBlock('latex', '\\' .. cmd .. '{' .. n .. '\\baselineskip}'))
+        local amount = '{' .. n .. '\\baselineskip}'
+        if is_table then
+          -- A table needs the EAGER form. \needspace is lazy, and in front of a longtable
+          -- the break it defers is taken inside longtable's output routine, which copies the
+          -- table head to the top of the next page AHEAD of this lead-in. See \needspaceNow
+          -- in book-print.latex. That macro exists only there, so degrade to plain
+          -- \needspace wherever it is undefined: another template loses the ghost-head fix,
+          -- not the build. Every other follower keeps the lazy \needspace unchanged.
+          out:insert(pandoc.RawBlock('latex',
+            '\\ifdefined\\needspaceNow\\needspaceNow' .. amount .. '\\else\\needspace' .. amount .. '\\fi'))
+        else
+          out:insert(pandoc.RawBlock('latex', '\\needspace' .. amount))
+        end
       end
     end
     out:insert(blk)
