@@ -286,6 +286,31 @@ $endif$
 % is required to accompany it, floatpagefraction raised so a float page must be well filled
 % before LaTeX chooses one.
 \usepackage{needspace}  % used by keep-leadin-with-content.lua
+% \needspaceNow: an EAGER \needspace, used only in front of a longtable.
+%
+% \needspace is lazy. It lays down a -100 penalty and stretch glue and lets TeX decide LATER,
+% when the page overfills, whether that penalty was the best place to break. In front of a
+% longtable "later" is inside the table, where longtable has already replaced \output with
+% \LT@output. That routine treats every page break that is not its own as a table break: it
+% ships the page and then \copy's the table head onto the top of the next page. The break
+% that was meant to sit BEFORE the lead-in is taken there, so the head is copied ahead of the
+% lead-in -- a header and rules with no body, above the sentence that introduces the table
+% (p.184 of round 7). The lazy break was also being taken with the page half empty, because
+% the glue \needspace adds makes that earlier break look cheaper than a break between rows.
+%
+% This macro decides NOW, while the default \output is still active: if fewer than #1 remain
+% on the page it breaks at once; otherwise it emits nothing, so there is no pending penalty
+% for longtable to misread. A table that then genuinely runs off the page breaks between rows
+% and repeats its head on the continuation page, as longtable intends.
+\makeatletter
+\newcommand{\needspaceNow}[1]{%
+  \par
+  \ifdim\pagegoal<\maxdimen % \pagegoal is \maxdimen on an empty page: nothing to protect
+    \ifdim\dimexpr\pagegoal-\pagetotal\relax<#1\relax
+      \vfil\penalty-\@M
+    \fi
+  \fi}
+\makeatother
 % Figures default to [!ht]: placed where they are referenced if at all possible, rather
 % than deferred. Deferral is what let a figure drift INTO a breakable callout and split it
 % from its own footnote -- Figure 5.4 on p.152 and Figure 7.6 on p.205 both landed between

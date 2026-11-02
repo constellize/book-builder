@@ -91,7 +91,12 @@ function Blocks(blocks)
     if nxt and not after_heading and ends_with_colon(blk) then
       local n = reservation_for(nxt)
       if n then
-        out:insert(pandoc.RawBlock('latex', '\\needspace{' .. n .. '\\baselineskip}'))
+        -- A table needs the EAGER form. \needspace is lazy, and in front of a longtable the
+        -- break it defers is taken inside longtable's output routine, which copies the table
+        -- head to the top of the next page AHEAD of this lead-in. See \needspaceNow in
+        -- book-print.latex. Every other follower keeps the lazy \needspace unchanged.
+        local cmd = (nxt.t == 'Table') and 'needspaceNow' or 'needspace'
+        out:insert(pandoc.RawBlock('latex', '\\' .. cmd .. '{' .. n .. '\\baselineskip}'))
       end
     end
     out:insert(blk)
