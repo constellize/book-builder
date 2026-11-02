@@ -164,14 +164,22 @@ end
 -- Walk a block for inlines that change the measurement:
 --   an Image      the box's height is the image's, which this filter cannot know
 --   a Note        a footnote, set at the foot of the box, so its height counts
--- Returns extra height in points, or nil when the block cannot be measured at all.
+--   a LineBreak   a hard break; the caller has to place it, so it is counted here only to
+--                 check that the caller found every one of them
+-- Returns extra height in points and the number of LineBreaks anywhere in the block, or nil
+-- when the block cannot be measured at all.
+--
+-- EVERY branch of estimate_block() that measures running text must come through here. A
+-- branch that walks inlines itself sees no Image and no Note, and silently pins a box around
+-- a half-page diagram.
 local function inline_extras(blk)
   if not (pandoc.walk_block and pandoc.utils and pandoc.utils.stringify) then
     return nil -- an older pandoc: measure nothing rather than measure wrongly
   end
-  local extra, measurable = 0, true
+  local extra, breaks, measurable = 0, 0, true
   pandoc.walk_block(blk, {
     Image = function() measurable = false end,
+    LineBreak = function() breaks = breaks + 1 end,
     Note = function(note)
       local text = pandoc.utils.stringify(note)
       extra = extra + FIT.note_base
@@ -179,7 +187,38 @@ local function inline_extras(blk)
     end,
   })
   if not measurable then return nil end
-  return extra
+  return extra, breaks
+end
+
+-- Rendered lines of one flat inline list, splitting at HARD line breaks.
+--
+-- pandoc.utils.stringify() flattens a LineBreak to a space, so a paragraph written with
+-- trailing-double-space breaks (the `escaped_line_breaks` extension, which the print
+-- defaults enable, and which the manuscript already uses) measures as one long wrapped run
+-- while the renderer sets one line per break. Forty-one hard-broken lines estimate at about
+-- a third of their true height that way -- past the cliff, which is a build that never ends.
+--
+-- Returns the line count and how many LineBreaks it placed. The caller compares that second
+-- number with inline_extras()'s total: a LineBreak nested inside Strong, a Link, a Span or a
+-- footnote is one this loop cannot see, and the honest answer there is "do not pin". That
+-- also makes a hard break inside a footnote unmeasurable, which is stricter than it needs to
+-- be and is the right way round.
+local function lines_of_inlines(inlines)
+  local lines, placed, parts = 0, 0, {}
+  local function flush()
+    lines = lines + wrapped(table.concat(parts), FIT.text_chars)
+    parts = {}
+  end
+  for _, inline in ipairs(inlines) do
+    if inline.t == 'LineBreak' then
+      flush()
+      placed = placed + 1
+    else
+      table.insert(parts, pandoc.utils.stringify(inline))
+    end
+  end
+  flush()
+  return lines, placed
 end
 
 local estimate_blocks -- forward declaration: block kinds recurse through it
@@ -190,16 +229,27 @@ local function estimate_block(blk)
   local t = blk.t
 
   if t == 'Para' or t == 'Plain' then
-    local extra = inline_extras(blk)
+    local extra, breaks = inline_extras(blk)
     if not extra then return nil end
-    return FIT.text_line * wrapped(pandoc.utils.stringify(blk), FIT.text_chars) + extra
+    local lines, placed = lines_of_inlines(blk.content)
+    if placed ~= breaks then return nil end -- a hard break this filter cannot place
+    return FIT.text_line * lines + extra
 
   elseif t == 'LineBlock' then
-    local h = 0
+    -- A line block is a list of inline lists, one per line. It MUST go through
+    -- inline_extras() like any other running text: before it did, a line block holding a
+    -- half-page diagram measured at about 66pt and was pinned, and a footnote in one was
+    -- not counted at all.
+    local extra, breaks = inline_extras(blk)
+    if not extra then return nil end
+    local h, placed = 0, 0
     for _, line in ipairs(blk.content) do
-      h = h + FIT.text_line * wrapped(pandoc.utils.stringify(line), FIT.text_chars)
+      local lines, n = lines_of_inlines(line)
+      h = h + FIT.text_line * lines
+      placed = placed + n
     end
-    return h
+    if placed ~= breaks then return nil end
+    return h + extra
 
   elseif t == 'CodeBlock' then
     -- Only reached when this filter runs before minted-filter.lua; in the print pipeline
@@ -250,6 +300,28 @@ local function estimate_block(blk)
   -- all), Figure, DefinitionList and anything a later pandoc adds: not measured.
   return nil
 end
+
+--[[
+  KNOWN INTERACTION, not fixed (round 8): a callout that contains its OWN lead-in can never
+  be pinned.
+
+  keep-leadin-with-content.lua runs BEFORE this filter in pandoc-defaults-print.yaml, and
+  deliberately so: callouts are still Divs at that point, so the filter walks into them and
+  protects lead-ins INSIDE a box as well as outside. It does that by inserting a
+  `\needspace{N\baselineskip}` RawBlock into the Div's own content. By the time
+  estimate_block() sees that block it is a LaTeX RawBlock that is not a minted environment
+  and is not blank, so it answers nil, and the whole box is left breakable.
+
+  That fails SAFE -- an unpinned box is exactly today's behaviour, and nothing overruns. But
+  it means fault B (an orphaned tail) can quietly come back for any callout that gains a
+  sentence ending in a colon, with no warning and no test failure. There is nothing in the
+  rendered page to tell you why that one box behaved differently from its neighbours.
+
+  Fixing it means recognising the sibling filter's reservation here and costing it as
+  N\baselineskip, which couples the two filters more tightly than this round wanted to. If
+  you do, note that a reservation is LAZY glue, so the honest cost is somewhere between 0
+  and N lines depending on where the box lands -- count N and stay conservative.
+--]]
 
 estimate_blocks = function(blocks)
   local h = 0

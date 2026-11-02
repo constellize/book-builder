@@ -32,9 +32,18 @@ const CAN_RUN = have('pandoc') && fs.existsSync(path.join(FILTERS, 'callout-filt
 if (!CAN_RUN) console.warn('callout-filter tests SKIPPED: need pandoc and the book-builder templates/filters layout');
 const maybe = CAN_RUN ? describe : describe.skip;
 
+// book-builder is a submodule shared between books. One test below reads the Constellize
+// manuscript, which is simply not there in a standalone clone or in examples/sample-book --
+// that test skips, rather than failing the suite with ENOENT.
+const MANUSCRIPT = path.join(BOOK_ROOT, 'ch3.md');
+const withManuscript = fs.existsSync(MANUSCRIPT) ? test : test.skip;
+
 // The reader extensions the print build uses, trimmed to what these fixtures need. The
 // fenced_divs extension is the load-bearing one: without it `::: code` is a paragraph.
-const FROM = 'markdown+fenced_divs+raw_attribute+footnotes+implicit_figures+link_attributes';
+const FROM = 'markdown+fenced_divs+raw_attribute+footnotes+implicit_figures+link_attributes'
+  // line_blocks and escaped_line_breaks are both on in pandoc-defaults-print.yaml, and both
+  // are paths into the estimator that bypassed its Image/Note guard. Keep them here.
+  + '+line_blocks+escaped_line_breaks';
 
 let tmp;
 
@@ -158,10 +167,10 @@ maybe('callout filter: a callout that fits does not split', () => {
     expect(pandocToLatex(codeCallout(16))).toMatch(/breakable=false/);
   });
 
-  test("the book's own p80 JSON listing is pinned", () => {
+  withManuscript("the book's own p80 JSON listing is pinned", () => {
     // ch3.md:62-78 verbatim: the instance the publisher reported, whose tail "] } } } }"
     // opened p80.
-    const json = fs.readFileSync(path.join(BOOK_ROOT, 'ch3.md'), 'utf8')
+    const json = fs.readFileSync(MANUSCRIPT, 'utf8')
       .split('\n').slice(59, 80).join('\n');
     expect(json).toMatch(/clientConfigServer/); // the fixture really is that listing
     expect(pandocToLatex(json)).toMatch(/breakable=false/);
@@ -181,6 +190,54 @@ maybe('callout filter: a callout that fits does not split', () => {
 
   test('a long promptref callout stays breakable', () => {
     expect(pandocToLatex(promptRefCallout(40))).not.toMatch(/breakable=false/);
+  });
+
+  // I-1. A line block measured its own inlines and never went through the Image/Note guard,
+  // so a half-page diagram inside one estimated at about 66pt and the box was pinned -- which
+  // does not warn, it hangs xelatex.
+  test('an image inside a LINE BLOCK is not pinned as two lines of text', () => {
+    const tex = pandocToLatex('::: info\n| ![d](images/diagrams/ch8/personal-to-team-knowledge-flow.excalidraw.png)\n| second line\n:::\n');
+    expect(tex).toMatch(/includegraphics|pandocbounded/); // the line block really holds the image
+    expect(tex).not.toMatch(/breakable=false/);
+  });
+
+  test('a footnote inside a line block is counted, not ignored', () => {
+    // The same bypass dropped Notes. Twenty SHORT lines measure at about 360pt and fit, so
+    // the box is pinned if the footnotes are free; the twenty footnote bodies are worth far
+    // more than the remaining budget, so counting them is what keeps it breakable.
+    const body = Array.from({ length: 20 }, (_, i) => `| line ${i}[^${i}]`).join('\n');
+    const defs = Array.from({ length: 20 }, (_, i) =>
+      `[^${i}]: https://constellize.com/prompts/v1/a-reasonably-long-footnote-url-${i}`).join('\n');
+    const tex = pandocToLatex(`::: info\n${body}\n:::\n\n${defs}\n`);
+    expect(tex).toMatch(/\\footnote/);           // the footnotes really are inside the box
+    expect(tex).not.toMatch(/breakable=false/);
+  });
+
+  // I-2. pandoc.utils.stringify() flattens a LineBreak to a space, so a paragraph written
+  // with trailing-double-space hard breaks measured as one long wrapped run while the
+  // renderer sets one line per break -- about a third of the true height. The manuscript
+  // already writes such breaks (ch1.md:138-141, ch5.md:46, ch5.md:71, introduction.md:184);
+  // none is inside a callout yet, which is the only reason the build still terminates.
+  test('hard line breaks are counted as lines, not flattened to spaces', () => {
+    // 40 short hard-broken lines: ~22 characters each, so one wrapped run would measure as
+    // about 18 lines and the real box is 40.
+    const hard = Array.from({ length: 40 }, (_, i) => `line number ${i} here  `).join('\n');
+    const tex = pandocToLatex(`::: info\n${hard}\n:::\n`);
+    expect(tex).toMatch(/\\\\/);              // the hard breaks really survived into LaTeX
+    expect(tex).not.toMatch(/breakable=false/);
+  });
+
+  test('a hard break nested inside formatting makes the box unmeasurable', () => {
+    // lines_of_inlines() only splits the TOP-level inline list. A LineBreak inside Strong is
+    // one it cannot place, so the honest answer is "do not pin".
+    const inner = Array.from({ length: 40 }, (_, i) => `**bold line ${i}  `).join('\n') + '**';
+    expect(pandocToLatex(`::: info\n${inner}\n:::\n`)).not.toMatch(/breakable=false/);
+  });
+
+  test('a short hard-broken callout is still pinned', () => {
+    // The fix must not make every hard break unmeasurable: four short lines still fit.
+    const hard = Array.from({ length: 4 }, (_, i) => `line number ${i} here  `).join('\n');
+    expect(pandocToLatex(`::: info\n${hard}\n:::\n`)).toMatch(/breakable=false/);
   });
 
   test('a callout containing only an image is not pinned as zero-height', () => {

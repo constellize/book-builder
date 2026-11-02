@@ -286,7 +286,20 @@ $endif$
 % is required to accompany it, floatpagefraction raised so a float page must be well filled
 % before LaTeX chooses one.
 \usepackage{needspace}  % used by keep-leadin-with-content.lua
-% \needspaceNow: an EAGER \needspace, used only in front of a longtable.
+% \needspaceNow: an EAGER \needspace. keep-leadin-with-content.lua uses it in front of a
+% longtable and, since round 8, in front of a CALLOUT as well. The two callers need it for
+% different reasons; the longtable one is below, and the callout one is this:
+%
+%   callout-filter-print.lua now sets `breakable=false` on a box that fits a page, so the
+%   next legal breakpoint after a lead-in can be a whole unbreakable box away. The stretch
+%   glue the lazy \needspace leaves behind then makes a nearly empty page look CHEAP, and
+%   TeX takes it: p.118 of the first round-8 build carried three lines and 90% white,
+%   shipped at badness 3861 against an alternative break scoring 100000. \needspaceNow emits
+%   nothing at all when the room is there, so there is no stretch to exploit.
+%
+% Do NOT reach for it in front of a HEADING as well. \sectionbreak and friends below are
+% deliberately still lazy: making them eager was measured in round 8 and stranded three more
+% lead-ins at page feet (the publisher's fault class 4) even though it tidied the whitespace.
 %
 % \needspace is lazy. It lays down a -100 penalty and stretch glue and lets TeX decide LATER,
 % when the page overfills, whether that penalty was the best place to break. In front of a

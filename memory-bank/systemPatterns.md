@@ -306,6 +306,33 @@ Model: `height = box + title overflow + Σ blocks + extras`, and a box is pinned
 `<= 433`. Predicted 543.97pt at 35 code lines against an empirically safe 35 and an
 unterminating 36 — accurate to about 2pt at the cliff.
 
+**EVERY branch that measures running text must go through `inline_extras()`.** That function
+is the only place `Image` sets "unmeasurable" and the only place a `Note` is costed. Review
+found two branches that walked inlines themselves and so pinned things they could not see,
+both ending in a non-terminating xelatex that no log and no `\vbox` check can catch:
+
+- a **`LineBlock`** summed its own lines, so a line block holding a half-page diagram measured
+  at about 66pt and was pinned, and footnotes in one cost nothing;
+- **`pandoc.utils.stringify()` flattens a `LineBreak` to a space**, so a paragraph written
+  with trailing-double-space hard breaks measured as one long wrapped run while the renderer
+  sets one line per break — 41 hard-broken lines estimated at roughly a third of their height,
+  ~669pt against the 544pt cliff. The manuscript already writes such breaks (`ch1.md:138-141`,
+  `ch5.md:46`, `ch5.md:71`, `introduction.md:184`); none is inside a callout yet, which is the
+  only reason the build terminated.
+
+Both are fixed: `lines_of_inlines()` splits an inline list at hard breaks, and a break it
+cannot place (one nested inside `Strong`, a `Link`, a `Span` or a footnote) makes the box
+unmeasurable rather than short. Four tests cover them, all of which fail against the first
+version of the filter.
+
+**Known interaction, NOT fixed: a callout containing its own lead-in can never be pinned.**
+`keep-leadin-with-content.lua` runs first and walks into callout `Div`s on purpose, so it
+inserts its `\needspace` RawBlock into the box's own content; `estimate_block()` sees an
+unrecognised LaTeX RawBlock and answers nil. That fails safe, but it means fault B can quietly
+return for any callout that gains a sentence ending in a colon, with nothing in the page or
+the test suite to say why that box behaved differently. Written up in the filter at the foot
+of `estimate_block()`.
+
 **Deliberate exclusions** (each returns "do not pin", which is the pre-existing behaviour):
 - **conversation callouts**, always. They are the only callout whose body is a stack of
   nested tcolorboxes, one per turn, each adding a frame rule, 0.3em of padding top and bottom
@@ -376,7 +403,9 @@ so one of them moves and the page loses the difference. The **trailing** barrier
 build with only the leading barrier produced a byte-identical page vector — and it is kept
 because it is the only guard against a figure declared inside a callout floating out of it.
 
-Whole book: **257pp to 267pp**, with 9 more pages under 15 body lines. That is the price of
+Whole book: **257pp to 267pp**, and **86 to 106 pages under 20 body lines**. Count the sparse
+pages that way, not by excluding figure pages and chapter openers: those are exactly the pages
+that got sparsest, so excluding them hides the cost. That is the price of
 "a callout that fits does not split", and it cannot be bought down without putting the split
 tails back; it is visible mostly in §4.1, which runs a dozen promptref boxes in a row.
 
