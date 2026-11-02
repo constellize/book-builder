@@ -183,5 +183,17 @@ describe('missing prerequisites are "not measured", not a failure and not a clea
     expect(r.notRun).toBe(true);
     expect(r.reason).toMatch(/uv/);
   });
-});
 
+  test('uv runs and exits 0 but writes no JSON: the detector failed, so ERROR, not notRun', () => {
+    const pdf = printPdf();
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    const which = require('child_process').execFileSync('which', ['pdftotext'], { encoding: 'utf8' }).trim();
+    fs.symlinkSync(which, path.join(bin, 'pdftotext'));
+    fs.writeFileSync(path.join(bin, 'uv'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = bin;
+    const baselinePath = path.join(tmp, 'baseline.json');
+    expect(() => checkTypesetFaults(pdf, baselinePath)).toThrow(/detector failed/);
+    expect(fs.existsSync(baselinePath)).toBe(false);
+  });
+});

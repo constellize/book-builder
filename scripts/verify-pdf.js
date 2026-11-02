@@ -239,7 +239,9 @@ function runDetector(pdfPath) {
     if (!(report.page_count > 0)) throw new Error('detector reported no pages');
     return report;
   } catch (e) {
-    if (e.code === 'ENOENT') throw missingPrerequisite('uv');
+    // Only a failure to SPAWN uv means it is not installed. An ENOENT from reading the
+    // detector's output (uv ran, detector wrote nothing) is the detector failing.
+    if (e.code === 'ENOENT' && e.syscall === 'spawnSync uv') throw missingPrerequisite('uv');
     const why = ((e.stderr || '').toString().trim().split('\n').pop()) || e.message;
     throw new Error(`typeset-fault detector failed on ${pdfPath}: ${why}`);
   } finally {
@@ -296,7 +298,7 @@ if (require.main === module) {
     { file: 'build/digital/constellize-book.pdf', expectPrint: false },
   ];
 
-  let errors = 0, warnings = 0;
+  let errors = 0, warnings = 0, notMeasured = false;
   console.log('PDF conformance checks\n');
   for (const t of targets) {
     const rel = path.relative(process.cwd(), t.file);
@@ -313,7 +315,7 @@ if (require.main === module) {
           console.log(`  ${DIM}info    typeset-faults — SKIPPED for the digital target ` +
             `(deferred: ~36 known faults, out of scope this round)${RST}`);
         } else if (r.notRun) {
-          warnings++;
+          warnings++; notMeasured = true;
           console.log(`  ${YEL}warning${RST} typeset-faults — NOT RUN: ${r.reason}. ` +
             `Typeset faults were not measured on this build; this is not a clean result.`);
         } else if (r.baselineWritten) {
@@ -350,4 +352,8 @@ if (require.main === module) {
     process.exit(1);
   }
   console.log(`${GRN}No conformance errors${RST}${warnings ? `, ${warnings} warning(s)` : ''}`);
+if (notMeasured) {
+  console.log(`${YEL}Typeset faults were NOT MEASURED on this build (see above) -- ` +
+    `"no conformance errors" does not cover them.${RST}`);
+}
 }
