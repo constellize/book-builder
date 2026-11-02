@@ -44,3 +44,16 @@ def test_closers_only_pattern_rejects_prose():
     assert mod.CLOSERS_ONLY.fullmatch("]")
     assert mod.CLOSERS_ONLY.fullmatch("  });")
     assert not mod.CLOSERS_ONLY.fullmatch("] and then")
+
+
+def test_p105_is_orphan_tail_not_figure_in_callout(faults):
+    # p105 opens with a callout footnote shed from p104; Figure 4.3 sits BELOW it, so the
+    # figure is not between the callout and its footnote. That is class 2, not class 1.
+    assert any(x["page"] == 105 for x in faults["2_orphan_tail"])
+    assert not any(x["page"] == 105 for x in faults["1_figure_in_callout"])
+
+
+def test_p215_is_figure_in_callout_not_orphan_tail(faults):
+    # p215: the caption comes first and the displaced footnote after it.
+    assert any(x["page"] == 215 for x in faults["1_figure_in_callout"])
+    assert not any(x["page"] == 215 for x in faults["2_orphan_tail"])

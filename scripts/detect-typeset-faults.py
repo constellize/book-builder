@@ -54,17 +54,21 @@ def find_faults(pdf_path):
     def has_caption(p):
         return any(CAPTION.match(l) for l in lines(p))
 
-    def leading_footnote(p):
-        """True if, ignoring the caption, the page's first content is a footnote body.
-        That footnote belongs to a reference on an earlier page: its callout was split
-        and the figure floated in between."""
-        rest = [l for l in bodylines(p) if not CAPTION.match(l)]
-        # a caption may wrap onto continuation lines; skip lines until the first mark line,
-        # but only look at the first few so a page's own footnotes at the foot do not count
-        for i, l in enumerate(rest[:4]):
-            if FOOTNOTE_MARK.match(l) and i + 1 < len(rest) and URL_LINE.match(rest[i+1]):
-                return True
-        return False
+    def footnote_fragment(p):
+        """Index (in the page's body lines) of a footnote body in the first few lines, else
+        None. Such a footnote belongs to a callout reference on an earlier page. A page's
+        own footnotes sit at the foot, so only the opening lines are examined."""
+        ls = bodylines(p)
+        for i, l in enumerate(ls[:5]):
+            if FOOTNOTE_MARK.match(l) and i + 1 < len(ls) and URL_LINE.match(ls[i+1]):
+                return i
+        return None
+
+    def caption_index(p):
+        for i, l in enumerate(bodylines(p)):
+            if CAPTION.match(l):
+                return i
+        return None
 
     findings = {k: [] for k in KEYS}
 
@@ -91,24 +95,29 @@ def find_faults(pdf_path):
                 key = '3_word_across_figure' if 'FIGURE' in kind else '2_orphan_tail'
                 findings[key].append({'page': p, 'text': f'{prevb[-1].strip()[-28:]} | {firstb.strip()[:28]}', 'kind': kind})
 
-        # 1. figure landing inside a callout. The figure need NOT be alone on the page
-        #    (p215 of v0.6.3 carries twenty body lines). Two symptoms, either suffices:
-        #    (a) the figure's page opens with the footnote of a callout from the page before;
-        #    (b) a word is hyphenated across the figure's page.
-        #    A URL at the foot of the previous page is NOT a symptom: a footnote body
-        #    legitimately ends with an unpunctuated URL (p34, p49, p99 are clean).
-        if has_caption(p):
-            if leading_footnote(p):
+        # Orphaned callout footnote (class 1 or 2, decided by the figure caption's position):
+        #  - caption BEFORE the fragment on the page: the figure sits between the callout and
+        #    its footnote (p215)                                      -> class 1
+        #  - fragment opens the page with no caption above it: the callout merely shed its
+        #    tail across the break (p105; the figure is below)          -> class 2
+        frag = footnote_fragment(p)
+        cap = caption_index(p)
+        if frag is not None:
+            tail = prevb[-1].strip()[-34:] if prevb else ''
+            if cap is not None and cap < frag:
                 findings['1_figure_in_callout'].append(
-                    {'page': p, 'text': (prevb[-1].strip()[-34:] if prevb else ''),
-                     'kind': 'callout footnote displaced past figure'})
-            else:
-                nxtb = bodylines(p+1) if p < N else []
-                if prevb and nxtb:
-                    tail, head = prevb[-1].strip(), nxtb[0].strip()
-                    if tail.endswith('-'):
-                        findings['1_figure_in_callout'].append(
-                            {'page': p, 'text': f'{tail[-34:]} | {head[:34]}', 'kind': 'word split across figure page'})
+                    {'page': p, 'text': tail, 'kind': 'callout footnote displaced past figure'})
+            elif frag == 0:
+                findings['2_orphan_tail'].append(
+                    {'page': p, 'text': tail, 'kind': 'callout footnote orphaned at page head'})
+
+        # 1 (secondary). A word hyphenated across a page that carries a figure caption.
+        if cap is not None and frag is None:
+            nxtb = bodylines(p+1) if p < N else []
+            if prevb and nxtb and prevb[-1].strip().endswith('-'):
+                tail, head = prevb[-1].strip(), nxtb[0].strip()
+                findings['1_figure_in_callout'].append(
+                    {'page': p, 'text': f'{tail[-34:]} | {head[:34]}', 'kind': 'word split across figure page'})
 
         # 4. widow/orphan: previous page ends on a lead-in line
         if prevb and prevb[-1].rstrip().endswith(':') and len(prevb[-1].strip()) > 12:
