@@ -41,3 +41,33 @@ describe('readOverfullVboxes', () => {
     expect(readOverfullVboxes(pdf)).toMatchObject({ measured: true, boxes: [{ page: 3, points: 9 }] });
   });
 });
+
+test('a warning with no page number is returned with page null, not dropped', () => {
+  expect(parseOverfullVboxes('Overfull \\vbox (3.5pt too high) detected at line 42'))
+    .toEqual([{ page: null, points: 3.5 }]);
+});
+
+// Against GENUINE xelatex output. Synthetic strings cannot prove the parser matches what
+// TeX emits; this one failed on the first real log (empty "[]" instead of "[184]").
+const { spawnSync } = require('child_process');
+const TEX_BIN = '/usr/local/texlive/2025/bin/universal-darwin:/usr/local/texlive/2024/bin/universal-darwin';
+const env = { ...process.env, PATH: `${process.env.PATH}:${TEX_BIN}` };
+const hasXelatex = !spawnSync('xelatex', ['--version'], { env }).error;
+
+(hasXelatex ? test : test.skip)('parses a real xelatex log that overflows page 2', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overfull-tex-'));
+  try {
+    const fx = path.join(__dirname, 'fixtures', 'overfull-vbox.tex');
+    const r = spawnSync('xelatex', ['-interaction=nonstopmode', `-output-directory=${dir}`, fx],
+      { env, encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    const logText = fs.readFileSync(path.join(dir, 'overfull-vbox.log'), 'utf8');
+    expect(logText).toMatch(/Overfull \\vbox/); // the fixture really did overflow
+    const boxes = parseOverfullVboxes(logText);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0].page).toBe(2);
+    expect(boxes[0].points).toBeCloseTo(141.8, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

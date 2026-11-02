@@ -1,0 +1,11 @@
+% Forces a genuine "Overfull \vbox ... has occurred while \output is active" on page 2.
+% Page 1 is ordinary. Page 2 holds an unbreakable box taller than the text block.
+\documentclass{article}
+\usepackage[paperheight=300pt,paperwidth=300pt,margin=20pt]{geometry}
+\begin{document}
+Page one.
+\newpage
+\noindent\fbox{\parbox[t][400pt]{100pt}{Unbreakable box taller than the page.}}
+\newpage
+Page three.
+\end{document}

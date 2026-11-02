@@ -47,11 +47,27 @@ function countOccurrences(buf, needle) {
 // (Overfull \hbox is a different, horizontal fault and is ignored here.)
 const OVERFULL_VBOX_TOLERANCE_PT = 5;
 
+// Two real forms (the second was confirmed against genuine xelatex output, see
+// __tests__/fixtures/overfull-vbox.tex):
+//   Overfull \vbox (12.5pt too high) has occurred while \output is active [184]
+//   Overfull \vbox (141.79999pt too high) has occurred while \output is active []
+// The bracket holds the page being shipped only if the warning falls mid-shipout; otherwise
+// it is empty, and the page being built is the one after the last "[N" seen in the log.
+// "... detected at line N" carries no page at all. Every warning is returned: page is null
+// when it cannot be determined, never dropped.
 function parseOverfullVboxes(logText) {
   const out = [];
-  const re = /Overfull \\vbox \(([\d.]+)pt too high\) has occurred while \\output is active \[(\d+)/g;
-  let m;
-  while ((m = re.exec(logText))) out.push({ page: parseInt(m[2], 10), points: parseFloat(m[1]) });
+  const re = /(?:^|[\s\]])\[(\d+)|Overfull \\vbox \(([\d.]+)pt too high\)([^\n]*)/g;
+  let lastShipped = 0, m;
+  while ((m = re.exec(logText))) {
+    if (m[1] !== undefined) { lastShipped = parseInt(m[1], 10); continue; }
+    const points = parseFloat(m[2]);
+    const explicit = /has occurred while \\output is active \[(\d+)/.exec(m[3]);
+    let page = null;
+    if (explicit) page = parseInt(explicit[1], 10);
+    else if (/has occurred while \\output is active \[\]/.test(m[3])) page = lastShipped + 1;
+    out.push({ page, points });
+  }
   return out;
 }
 
@@ -219,8 +235,10 @@ function checkPdf(file, { expectPrint }) {
       if (bad.length) {
         add('warning', 'overfull-vbox',
           `${bad.length} Overfull \\vbox of ${OVERFULL_VBOX_TOLERANCE_PT}pt or more ` +
-          `(${r.boxes.length} in the log in total)`,
-          bad.slice(0, 5).map((b) => `  p${b.page}  ${b.points.toFixed(1)}pt too high`).join('\n'));
+          `(${r.boxes.length} in the log in total)` +
+          (bad.some((b) => b.page === null)
+            ? `; ${bad.filter((b) => b.page === null).length} with page unknown` : ''),
+          bad.slice(0, 5).map((b) => `  p${b.page === null ? '?' : b.page}  ${b.points.toFixed(1)}pt too high`).join('\n'));
       } else {
         add('info', 'overfull-vbox',
           `0 Overfull \\vbox of ${OVERFULL_VBOX_TOLERANCE_PT}pt or more ` +
