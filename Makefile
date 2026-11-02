@@ -120,6 +120,7 @@ clean:
 lint:
 	@echo "🔍 Linting JavaScript files..."
 	@find $(SCRIPTS_DIR) -name "*.js" -exec node --check {} \;
+	@node $(SCRIPTS_DIR)/validate-structure.js
 	@echo "✅ Lint check passed!"
 
 check-templates:
