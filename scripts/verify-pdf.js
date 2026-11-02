@@ -258,7 +258,8 @@ function checkTypesetFaults(pdfPath, baselinePath) {
       'not overwriting it -- fix or delete it deliberately');
   }
   return { ...compareToBaseline(current, flatten(stored)), skipped: false, baselineWritten: false,
-    pageCount: report.page_count, currentCount: current.length, baselinePageCount: stored.page_count };
+    pageCount: report.page_count, currentCount: current.length, baselinePageCount: stored.page_count,
+    baselineProvenance: stored.provenance || null };
 }
 
 const describeFinding = (f) => `${f.cls.replace('_', ' ')}  p${f.page}  ${f.kind}`;
@@ -292,7 +293,8 @@ if (require.main === module) {
             `(${r.currentCount} finding(s), ${r.pageCount}pp). Nothing to compare against yet.${RST}`);
         } else {
           console.log(`  ${DIM}info    typeset-faults — comparison against ${BASELINE}, NOT a ` +
-            `verdict that the pages are correct (the detector has missed real faults before): ` +
+            `verdict that the pages are correct (the detector has missed real faults before). ` +
+            `Baseline from ${r.baselineProvenance ? `${r.baselineProvenance.source_pdf} (v${r.baselineProvenance.book_version}, ${r.baselineProvenance.generated_at})` : 'unknown source (no provenance recorded)'}: ` +
             `${r.newFindings.length} new, ${r.fixedFindings.length} fixed` +
             (r.baselinePageCount !== r.pageCount
               ? `; page count ${r.baselinePageCount} -> ${r.pageCount}, so page numbers may have shifted`

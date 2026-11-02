@@ -9,7 +9,7 @@ reader sees and what the publisher reviewed. None of them read the LaTeX source.
 Run:  python3 detect-typeset-faults.py build/print/constellize-book.pdf [--json out.json]
 Test: cd book-builder && uv run pytest scripts/__tests__/detect_typeset_faults_test.py -v
 """
-import subprocess, sys, re, json
+import subprocess, sys, re, json, os, datetime
 
 # A running head carries the folio on the SAME line under -layout: the folio leads on a
 # verso ("106     Chapter 4. ...") and trails on a recto ("4.1. ...        107"). Strip it
@@ -143,6 +143,23 @@ def find_faults(pdf_path):
     return findings
 
 
+def provenance(pdf, cwd=None):
+    """What produced a baseline, so a stale one can be recognised as stale. The filename
+    carries none of this: baselines live at a stable, version-less path.
+    book_version is read from metadata.yaml in the working directory (the book), else None."""
+    version = None
+    meta = os.path.join(cwd or os.getcwd(), 'metadata.yaml')
+    if os.path.exists(meta):
+        with open(meta) as fh:
+            m = re.search(r'^version:\s*["\']?([^"\'\s#]+)', fh.read(), re.M)
+        version = m.group(1) if m else None
+    return {
+        'source_pdf': pdf,
+        'book_version': version,
+        'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+    }
+
+
 def main(argv):
     args = argv[1:]
     out = None
@@ -157,6 +174,7 @@ def main(argv):
         label = k.split('_', 1)[1].replace('_', ' ')
         print(f"  S{k[0]}  {label:<26} {len(findings[k])}")
     print()
+    findings['provenance'] = provenance(pdf)
     text = json.dumps(findings, indent=1)
     if out:
         with open(out, 'w') as fh:

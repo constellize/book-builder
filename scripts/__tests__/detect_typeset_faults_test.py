@@ -80,3 +80,15 @@ def test_known_false_positives_stay_clean(faults):
 def test_unreadable_pdf_raises_instead_of_reporting_zero(path):
     with pytest.raises(RuntimeError):
         mod.find_faults(path)
+
+
+def test_provenance_records_pdf_version_and_time(tmp_path):
+    (tmp_path / "metadata.yaml").write_text('title: X\nversion: "0.6.3"\n')
+    p = mod.provenance("build/print/book.pdf", cwd=str(tmp_path))
+    assert p["source_pdf"] == "build/print/book.pdf"
+    assert p["book_version"] == "0.6.3"
+    assert p["generated_at"].endswith("+00:00")
+
+
+def test_provenance_version_is_none_without_metadata(tmp_path):
+    assert mod.provenance("x.pdf", cwd=str(tmp_path))["book_version"] is None

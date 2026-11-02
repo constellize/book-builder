@@ -83,7 +83,12 @@ describe('checkTypesetFaults', () => {
     expect(r.baselineWritten).toBe(true);
     expect(r.newFindings).toEqual([]);
     expect(fs.existsSync(baselinePath)).toBe(true);
-    expect(JSON.parse(fs.readFileSync(baselinePath, 'utf8')).page_count).toBe(1);
+    const written = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+    expect(written.page_count).toBe(1);
+    // A stable, version-less filename means provenance must live inside the file.
+    expect(written.provenance).toEqual(expect.objectContaining({
+      source_pdf: pdf, generated_at: expect.any(String) }));
+    expect(written.provenance).toHaveProperty('book_version');
   });
 
   test('compares against an existing baseline without overwriting it', () => {
