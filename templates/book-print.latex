@@ -531,6 +531,16 @@ $endif$
 $if(toc)$
 {
 \setcounter{tocdepth}{$toc-depth$}
+% The book class sizes the page-number box at 1.55em and the right margin at 2.55em, which
+% fits two digits. This book's numbers run to three digits, so the box overflowed, the
+% numbers sat at ragged right edges, and a title that filled its line ran straight into the
+% number ("...Systematic Planning189", 7.4). 2.4em holds three digits of the body face with
+% room to spare; the margin stays 1em wider than the box so a title always leaves a gap and
+% leaders. Local to this group, so nothing else that uses \@pnumwidth is affected.
+\makeatletter
+\renewcommand{\@pnumwidth}{2.4em}
+\renewcommand{\@tocrmarg}{3.4em}
+\makeatother
 \tableofcontents
 }
 $endif$
