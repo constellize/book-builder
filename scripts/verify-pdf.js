@@ -19,7 +19,7 @@
  * docx pipeline, plus a byte scan of the file itself.
  */
 
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -197,8 +197,9 @@ const DETECTOR = path.join(__dirname, 'detect-typeset-faults.py');
 const FAULT_CLASSES = ['1_figure_in_callout', '2_orphan_tail', '3_word_across_figure',
   '4_widow_orphan', '5_missing_glyph'];
 
-// The digital PDF carries ~36 known faults and is out of scope for this round.
-const isDigitalTarget = (file) => path.resolve(file).split(path.sep).includes('digital');
+// The digital PDF carries ~36 known faults and is out of scope for this round. The CALLER
+// names the target; the path is never inspected (an ancestor directory called "digital"
+// once skipped a print PDF and reported a clean pass that measured nothing).
 
 function flatten(report) {
   return FAULT_CLASSES.flatMap((cls) =>
@@ -219,16 +220,26 @@ function compareToBaseline(current, baseline) {
   };
 }
 
+// "The tool is not installed here" is not "the tool ran and something is wrong". The first
+// must not break a consuming book's build (reported as not run, exit 0); the second is an
+// error. A prerequisite problem is flagged with .prerequisite on the thrown error.
+function missingPrerequisite(name) {
+  return Object.assign(new Error(`${name} is not installed or not on PATH`), { prerequisite: name });
+}
+
 function runDetector(pdfPath) {
+  // pdftotext is called by the detector itself, whose failure would look like a crash.
+  if (spawnSync('pdftotext', ['-v'], { env: process.env }).error?.code === 'ENOENT') throw missingPrerequisite('pdftotext');
   // Python runs through uv in this project. The detector is stdlib-only.
   const out = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'typeset-')), 'out.json');
   try {
     execFileSync('uv', ['run', '--project', path.join(__dirname, '..'), 'python', DETECTOR,
-      pdfPath, '--json', out], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      pdfPath, '--json', out], { encoding: 'utf8', env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     const report = JSON.parse(fs.readFileSync(out, 'utf8'));
     if (!(report.page_count > 0)) throw new Error('detector reported no pages');
     return report;
   } catch (e) {
+    if (e.code === 'ENOENT') throw missingPrerequisite('uv');
     const why = ((e.stderr || '').toString().trim().split('\n').pop()) || e.message;
     throw new Error(`typeset-fault detector failed on ${pdfPath}: ${why}`);
   } finally {
@@ -236,17 +247,28 @@ function runDetector(pdfPath) {
   }
 }
 
-function checkTypesetFaults(pdfPath, baselinePath) {
-  if (isDigitalTarget(pdfPath)) {
-    return { newFindings: [], fixedFindings: [], skipped: true, baselineWritten: false };
+// opts.target is 'print' (default) or 'digital'. Returns skipped:true for digital, and
+// notRun:true (with reason) when a prerequisite is not installed. Any other failure throws.
+function checkTypesetFaults(pdfPath, baselinePath, { target = 'print' } = {}) {
+  if (target === 'digital') {
+    return { newFindings: [], fixedFindings: [], skipped: true, notRun: false, baselineWritten: false };
   }
-  const report = runDetector(pdfPath);
+  let report;
+  try {
+    report = runDetector(pdfPath);
+  } catch (e) {
+    if (e.prerequisite) {
+      return { newFindings: [], fixedFindings: [], skipped: false, notRun: true,
+        reason: e.message, baselineWritten: false };
+    }
+    throw e;
+  }
   const current = flatten(report);
 
   if (!fs.existsSync(baselinePath)) {
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
     fs.writeFileSync(baselinePath, JSON.stringify(report, null, 1) + '\n');
-    return { newFindings: [], fixedFindings: [], skipped: false, baselineWritten: true,
+    return { newFindings: [], fixedFindings: [], skipped: false, notRun: false, baselineWritten: true,
       pageCount: report.page_count, currentCount: current.length };
   }
 
@@ -257,7 +279,7 @@ function checkTypesetFaults(pdfPath, baselinePath) {
     throw new Error(`typeset baseline ${baselinePath} is unreadable (${e.message}); ` +
       'not overwriting it -- fix or delete it deliberately');
   }
-  return { ...compareToBaseline(current, flatten(stored)), skipped: false, baselineWritten: false,
+  return { ...compareToBaseline(current, flatten(stored)), skipped: false, notRun: false, baselineWritten: false,
     pageCount: report.page_count, currentCount: current.length, baselinePageCount: stored.page_count,
     baselineProvenance: stored.provenance || null };
 }
@@ -281,14 +303,20 @@ if (require.main === module) {
     console.log(`${DIM}${rel}${RST}`);
     const findings = checkPdf(t.file, t);
 
-    // Typeset-fault comparison, after the conformance checks, print target only.
-    if (!t.expectPrint) {
-      console.log(`  ${DIM}info    typeset-faults — SKIPPED for the digital target ` +
-        `(deferred: ~36 known faults, out of scope this round)${RST}`);
-    } else if (fs.existsSync(t.file)) {
+    // Typeset-fault comparison, after the conformance checks. Every outcome prints a line.
+    if (t.expectPrint && !fs.existsSync(t.file)) {
+      // checkPdf has already reported the missing file as an error.
+    } else {
       try {
-        const r = checkTypesetFaults(t.file, BASELINE);
-        if (r.baselineWritten) {
+        const r = checkTypesetFaults(t.file, BASELINE, { target: t.expectPrint ? 'print' : 'digital' });
+        if (r.skipped) {
+          console.log(`  ${DIM}info    typeset-faults — SKIPPED for the digital target ` +
+            `(deferred: ~36 known faults, out of scope this round)${RST}`);
+        } else if (r.notRun) {
+          warnings++;
+          console.log(`  ${YEL}warning${RST} typeset-faults — NOT RUN: ${r.reason}. ` +
+            `Typeset faults were not measured on this build; this is not a clean result.`);
+        } else if (r.baselineWritten) {
           console.log(`  ${DIM}info    typeset-faults — no baseline at ${BASELINE}; wrote one ` +
             `(${r.currentCount} finding(s), ${r.pageCount}pp). Nothing to compare against yet.${RST}`);
         } else {

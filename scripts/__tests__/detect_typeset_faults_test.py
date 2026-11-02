@@ -100,13 +100,23 @@ def _tiny_pdf(path, text):
 
 
 def test_provenance_reads_version_from_pdf_front_matter(tmp_path, monkeypatch):
-    # A metadata.yaml saying a DIFFERENT version must be ignored: the build does not use it.
-    (tmp_path / "metadata.yaml").write_text('version: "9.9.9"\n')
+    # The PDF is stamped 0.1.2. Decoys say 9.9.9 in the cwd, beside the PDF, and in their
+    # templates/ dirs. The REAL book-builder/templates/metadata.yaml (the copy the build
+    # uses, which is where the trap lives) says something else again; the stamp must differ
+    # from it, so a regression that reads it fails here too.
+    real_template = os.path.join(HERE, "..", "..", "templates", "metadata.yaml")
+    if os.path.exists(real_template):
+        assert "0.1.2" not in open(real_template).read()
+    for d in [tmp_path / "metadata.yaml", tmp_path / "templates" / "metadata.yaml",
+              tmp_path / "pdfdir" / "metadata.yaml",
+              tmp_path / "pdfdir" / "templates" / "metadata.yaml"]:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.write_text('version: "9.9.9"\n')
     monkeypatch.chdir(tmp_path)
-    pdf = _tiny_pdf(tmp_path / "b.pdf", "Author Preview v0.6.3")
+    pdf = _tiny_pdf(tmp_path / "pdfdir" / "b.pdf", "Author Preview v0.1.2")
     p = mod.provenance(pdf)
     assert p["source_pdf"] == pdf
-    assert p["book_version"] == "0.6.3"
+    assert p["book_version"] == "0.1.2"
     assert p["generated_at"].endswith("+00:00")
 
 

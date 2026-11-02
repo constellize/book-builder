@@ -110,12 +110,22 @@ describe('checkTypesetFaults', () => {
     expect(JSON.parse(fs.readFileSync(baselinePath, 'utf8'))).toEqual(stored);
   });
 
-  test('skips the digital target and does not even read the PDF', () => {
+  test('skips when the caller names the digital target, without reading the PDF', () => {
     const digital = path.join(tmp, 'build', 'digital', 'book.pdf');   // does not exist
     const baselinePath = path.join(tmp, 'baseline.json');
-    const r = checkTypesetFaults(digital, baselinePath);
+    const r = checkTypesetFaults(digital, baselinePath, { target: 'digital' });
     expect(r.skipped).toBe(true);
     expect(fs.existsSync(baselinePath)).toBe(false);
+  });
+
+  test('a print PDF under an ancestor directory called "digital" is still measured', () => {
+    const pdf = path.join(tmp, 'digital', 'mybook', 'build', 'print', 'book.pdf');
+    fs.mkdirSync(path.dirname(pdf), { recursive: true });
+    writeTinyPdf(pdf);
+    const baselinePath = path.join(tmp, 'digital', 'mybook', 'qa', 'baseline.json');
+    const r = checkTypesetFaults(pdf, baselinePath);
+    expect(r.skipped).toBe(false);
+    expect(r.baselineWritten).toBe(true);
   });
 
   test('an unreadable PDF is an error, never "no faults" and never a baseline', () => {
@@ -137,3 +147,41 @@ describe('checkTypesetFaults', () => {
     expect(fs.readFileSync(baselinePath, 'utf8')).toBe('{ not json');
   });
 });
+
+describe('missing prerequisites are "not measured", not a failure and not a clean pass', () => {
+  const realPath = process.env.PATH;
+  afterEach(() => { process.env.PATH = realPath; });
+
+  function printPdf() {
+    const pdf = path.join(tmp, 'build', 'print', 'book.pdf');
+    fs.mkdirSync(path.dirname(pdf), { recursive: true });
+    writeTinyPdf(pdf);
+    return pdf;
+  }
+
+  test('no uv and no pdftotext on PATH: notRun with a reason, nothing thrown or written', () => {
+    const pdf = printPdf();
+    const baselinePath = path.join(tmp, 'baseline.json');
+    const empty = path.join(tmp, 'empty-bin');
+    fs.mkdirSync(empty);
+    process.env.PATH = empty;
+    const r = checkTypesetFaults(pdf, baselinePath);
+    expect(r.notRun).toBe(true);
+    expect(r.reason).toMatch(/pdftotext|uv/);
+    expect(r.newFindings).toEqual([]);
+    expect(fs.existsSync(baselinePath)).toBe(false);
+  });
+
+  test('pdftotext present but uv absent: notRun naming uv', () => {
+    const pdf = printPdf();
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    const which = require('child_process').execFileSync('which', ['pdftotext'], { encoding: 'utf8' }).trim();
+    fs.symlinkSync(which, path.join(bin, 'pdftotext'));
+    process.env.PATH = bin;
+    const r = checkTypesetFaults(pdf, path.join(tmp, 'baseline.json'));
+    expect(r.notRun).toBe(true);
+    expect(r.reason).toMatch(/uv/);
+  });
+});
+
