@@ -9,7 +9,7 @@ reader sees and what the publisher reviewed. None of them read the LaTeX source.
 Run:  python3 detect-typeset-faults.py build/print/constellize-book.pdf [--json out.json]
 Test: cd book-builder && uv run pytest scripts/__tests__/detect_typeset_faults_test.py -v
 """
-import subprocess, sys, re, json, os, datetime
+import subprocess, sys, re, json, datetime
 
 # A running head carries the folio on the SAME line under -layout: the folio leads on a
 # verso ("106     Chapter 4. ...") and trails on a recto ("4.1. ...        107"). Strip it
@@ -143,19 +143,28 @@ def find_faults(pdf_path):
     return findings
 
 
-def provenance(pdf, cwd=None):
+VERSION_STAMP = re.compile(r'Author Preview\s+v(\d+\.\d+\.\d+)')
+
+
+def pdf_version(pdf):
+    """The book version stamped in the PDF's own front matter, else None. Read from the
+    document measured, never from metadata.yaml: the build uses book-builder's template copy,
+    and the two can disagree. Failure to read yields None; the faults scan has its own
+    loud failure."""
+    r = subprocess.run(['pdftotext', '-layout', '-f', '1', '-l', '6', pdf, '-'],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    m = VERSION_STAMP.search(r.stdout)
+    return m.group(1) if m else None
+
+
+def provenance(pdf):
     """What produced a baseline, so a stale one can be recognised as stale. The filename
-    carries none of this: baselines live at a stable, version-less path.
-    book_version is read from metadata.yaml in the working directory (the book), else None."""
-    version = None
-    meta = os.path.join(cwd or os.getcwd(), 'metadata.yaml')
-    if os.path.exists(meta):
-        with open(meta) as fh:
-            m = re.search(r'^version:\s*["\']?([^"\'\s#]+)', fh.read(), re.M)
-        version = m.group(1) if m else None
+    carries none of this: baselines live at a stable, version-less path."""
     return {
         'source_pdf': pdf,
-        'book_version': version,
+        'book_version': pdf_version(pdf),
         'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
     }
 

@@ -82,13 +82,40 @@ def test_unreadable_pdf_raises_instead_of_reporting_zero(path):
         mod.find_faults(path)
 
 
-def test_provenance_records_pdf_version_and_time(tmp_path):
-    (tmp_path / "metadata.yaml").write_text('title: X\nversion: "0.6.3"\n')
-    p = mod.provenance("build/print/book.pdf", cwd=str(tmp_path))
-    assert p["source_pdf"] == "build/print/book.pdf"
+def _tiny_pdf(path, text):
+    """A one-page PDF carrying `text`; pdftotext rebuilds the xref, so offsets need not be exact."""
+    stream = f"BT /F1 12 Tf 72 700 Td ({text}) Tj ET"
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            "/Resources << /Font << /F1 5 0 R >> >> >>",
+            f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out = "%PDF-1.4\n"
+    for i, o in enumerate(objs):
+        out += f"{i+1} 0 obj\n{o}\nendobj\n"
+    out += "trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n"
+    path.write_text(out, encoding="latin-1")
+    return str(path)
+
+
+def test_provenance_reads_version_from_pdf_front_matter(tmp_path, monkeypatch):
+    # A metadata.yaml saying a DIFFERENT version must be ignored: the build does not use it.
+    (tmp_path / "metadata.yaml").write_text('version: "9.9.9"\n')
+    monkeypatch.chdir(tmp_path)
+    pdf = _tiny_pdf(tmp_path / "b.pdf", "Author Preview v0.6.3")
+    p = mod.provenance(pdf)
+    assert p["source_pdf"] == pdf
     assert p["book_version"] == "0.6.3"
     assert p["generated_at"].endswith("+00:00")
 
 
-def test_provenance_version_is_none_without_metadata(tmp_path):
-    assert mod.provenance("x.pdf", cwd=str(tmp_path))["book_version"] is None
+def test_provenance_version_is_none_without_a_stamp(tmp_path):
+    pdf = _tiny_pdf(tmp_path / "b.pdf", "Just some text")
+    assert mod.provenance(pdf)["book_version"] is None
+
+
+def test_provenance_version_is_none_for_unreadable_pdf(tmp_path):
+    bad = tmp_path / "bad.pdf"
+    bad.write_text("not a pdf")
+    assert mod.provenance(str(bad))["book_version"] is None
