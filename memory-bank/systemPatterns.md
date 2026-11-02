@@ -662,12 +662,12 @@ Final Output (PDF/HTML/EPUB)
 **Rationale**: Source code access, easier customization, no npm registry dependency
 **Date**: December 25, 2024
 
+### `\clubpenalty` cannot protect a one-line paragraph
+
+`\clubpenalty=10000` forbids leaving a paragraph's first line alone at a page foot, but it acts on a line break inside a paragraph. A one-line paragraph has no line break to penalise, so any paragraph that is only one line long (a standalone bold label, say) is strandable by construction, whatever the penalties are set to. What matters is the length of the whole paragraph, not the lead: a run-in bold lead followed by prose is only at risk if the entire paragraph fits on one line. This is why the fix for stranded labels (e.g. `**Day 1: ...**` alone at a page foot) is to fold them into the paragraph they introduce rather than to add keep-with-next machinery. `scripts/validate-structure.js` (`npm run validate:structure`, run by `make lint`) finds such bold-only blocks in source. It reports a warning and exits 0 by design: such labels are often legitimate, and this builder is shared, so a failing check would be switched off.
+
 ---
 
 **Document Owner**: Steve Atkinson
 **Last Updated**: January 2, 2026
 **Next Review**: After major feature additions or architecture changes
-
-### `\clubpenalty` cannot protect a one-line paragraph
-
-`\clubpenalty=10000` forbids leaving a paragraph's first line alone at a page foot, but it acts on a line break inside a paragraph. A one-line paragraph has no line break to penalise, so any one-line block (a bold label, a short run-in lead) is strandable by construction, whatever the penalties are set to. This is why the fix for stranded labels (e.g. `**Day 1: ...**` alone at a page foot) is to fold them into the paragraph they introduce rather than to add keep-with-next machinery. `scripts/validate-structure.js` (`npm run validate:structure`, run by `make lint`) finds such bold-only blocks in source. It reports a warning and exits 0 by design: such labels are often legitimate, and this builder is shared, so a failing check would be switched off.
