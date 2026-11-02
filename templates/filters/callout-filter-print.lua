@@ -82,6 +82,224 @@ function extractMessageAfterMarker(para)
   return pandoc.write(pandoc.Pandoc({message_para}), "latex")
 end
 
+-- ============================================================================
+-- FLOAT BARRIERS AND PINNING  (publisher review 2026-11-02, items 1 and 2)
+-- ============================================================================
+--
+-- ITEM 1: a figure landed between a callout and its own footnote (p.214->215 of round 7).
+-- The template already asks for `\floatplacement{figure}{!ht}` and loads placeins with
+-- [section], but `!ht` is only a preference -- a figure that does not fit is still deferred
+-- and dropped at the top of a later page -- and placeins' [section] barrier only fires at
+-- \section. The figure at ch8.md:186 and the callout at ch8.md:188 are in the SAME section,
+-- so nothing stood between them. A \FloatBarrier on each side of every box does.
+--
+-- ITEM 2: a callout shed an orphaned tail -- five instances in round 7 (pp. 80, 105, 108,
+-- 112, 141), four of them a promptref box whose footnote URL ended up alone overleaf.
+--
+-- WHY PINNING, AND NOT PENALTIES. Both of these were measured, not guessed:
+--   * tcolorbox's splitting IGNORES PENALTIES IN BOX CONTENT. An explicit \penalty10000 at
+--     the observed break point changed nothing. So \widowpenalty, \brokenpenalty and
+--     fancyvrb's own last-line widow penalty are all inert inside a callout.
+--   * There is NO `lines after break` key. `lines before break` (set in book-print.latex)
+--     governs only the part BEFORE a split, which is why the publisher's suggested
+--     "minimum lines after a break" rule does not exist and cannot be built.
+-- The tail is therefore prevented by NOT SPLITTING a box that could have fitted whole.
+-- A promptref's footnote is set INSIDE its own box (tcolorbox collects it at the box foot),
+-- which is why an unbreakable box keeps the footnote with the Link: line it belongs to.
+--
+-- WHY THE THRESHOLD IS CONSERVATIVE. A pinned box that does not fit the text block does NOT
+-- degrade into an Overfull \vbox: xelatex SPINS FOREVER shipping empty pages. Measured at
+-- the 6x9 trim with this template: a pinned code callout of 35 rendered lines (~544pt)
+-- typesets; 36 (~558pt) never terminates. So the estimate below must never be allowed to
+-- run high, and anything it cannot measure confidently is left breakable.
+--
+-- All constants are in TeX points, measured against this template at the 6x9 trim. The
+-- derivation is recorded in book-builder/memory-bank/systemPatterns.md; keep the two in step.
+local FIT = {
+  text_block  = 542.03, -- \textheight: 9in paper less 0.75in top and bottom
+  fraction    = 0.80,   -- of the text block a pinned box may claim. The missing 20% covers
+                        -- estimation error, because overrunning does not cost a warning --
+                        -- it costs the build. The tallest box this book pins measures 429pt.
+
+  box         = 34.00,  -- frame + a one-line boxed title + top=0.75em + bottom=0.5em
+  title_line  = 18.00,  -- each FURTHER line a wrapped boxed title takes
+  title_chars = 42,     -- characters per line of the boxed title (small, 0.82\linewidth)
+
+  text_line   = 16.32,  -- one line of body text: 11pt at linestretch 1.2
+  text_chars  = 50,     -- characters per line inside a box (58 measured; held back for
+                        -- justification and for bold or italic runs that set wider)
+
+  code_line   = 14.40,  -- one rendered line of minted at \setminted fontsize=\small
+  code_chars  = 48,     -- characters per RENDERED line inside a code callout. The geometric
+                        -- measure takes 56, but breaklines/breakanywhere break at the last
+                        -- break point BEFORE the measure and indent the continuation under
+                        -- the hook symbol, so a wrapped line really gets about 48.
+  code_pad    =  6.30,  -- fancyvrb's own space above and below a minted block
+
+  note_base   = 10.00,  -- footnote rule and \skip\footins inside the box
+  note_line   = 11.00,  -- one line of footnote text
+  note_chars  = 40,
+
+  em          = 11.00,  -- 1em of the body font, for the \vspace the promptref box adds
+}
+FIT.budget = FIT.fraction * FIT.text_block -- 433.6pt
+--
+-- Budget in whole lines, for reading the numbers above against a page:
+--   a code callout  (433.6 - 34 - 6.3) / 14.40 = 27 rendered lines
+--   a text callout  (433.6 - 34)       / 16.32 = 24 rendered lines
+-- ============================================================================
+
+local function charcount(s)
+  if type(s) ~= 'string' then return 0 end
+  return (utf8 and utf8.len and utf8.len(s)) or #s
+end
+
+-- How many typeset lines a string of plain text occupies at `per_line` characters.
+local function wrapped(s, per_line)
+  local n = charcount(s)
+  if n <= 0 then return 1 end
+  return math.ceil(n / per_line)
+end
+
+-- Walk a block for inlines that change the measurement:
+--   an Image      the box's height is the image's, which this filter cannot know
+--   a Note        a footnote, set at the foot of the box, so its height counts
+-- Returns extra height in points, or nil when the block cannot be measured at all.
+local function inline_extras(blk)
+  if not (pandoc.walk_block and pandoc.utils and pandoc.utils.stringify) then
+    return nil -- an older pandoc: measure nothing rather than measure wrongly
+  end
+  local extra, measurable = 0, true
+  pandoc.walk_block(blk, {
+    Image = function() measurable = false end,
+    Note = function(note)
+      local text = pandoc.utils.stringify(note)
+      extra = extra + FIT.note_base
+             + FIT.note_line * math.max(2, wrapped(text, FIT.note_chars))
+    end,
+  })
+  if not measurable then return nil end
+  return extra
+end
+
+local estimate_blocks -- forward declaration: block kinds recurse through it
+
+-- Height of one block in points, or nil when it cannot be measured confidently. Returning
+-- nil is always safe: the caller then leaves the box breakable, which is today's behaviour.
+local function estimate_block(blk)
+  local t = blk.t
+
+  if t == 'Para' or t == 'Plain' then
+    local extra = inline_extras(blk)
+    if not extra then return nil end
+    return FIT.text_line * wrapped(pandoc.utils.stringify(blk), FIT.text_chars) + extra
+
+  elseif t == 'LineBlock' then
+    local h = 0
+    for _, line in ipairs(blk.content) do
+      h = h + FIT.text_line * wrapped(pandoc.utils.stringify(line), FIT.text_chars)
+    end
+    return h
+
+  elseif t == 'CodeBlock' then
+    -- Only reached when this filter runs before minted-filter.lua; in the print pipeline
+    -- minted-filter has already turned code blocks into RawBlocks, handled below.
+    local h = FIT.code_pad
+    for line in (blk.text .. '\n'):gmatch('(.-)\n') do
+      h = h + FIT.code_line * wrapped(line, FIT.code_chars)
+    end
+    return h
+
+  elseif t == 'RawBlock' then
+    if blk.format ~= 'latex' and blk.format ~= 'tex' then return nil end
+    local body = blk.text:match('\\begin{minted}%b{}\n(.-)\n\\end{minted}')
+    if body then
+      local h = FIT.code_pad
+      for line in (body .. '\n'):gmatch('(.-)\n') do
+        h = h + FIT.code_line * wrapped(line, FIT.code_chars)
+      end
+      return h
+    end
+    if blk.text:match('^%s*$') then return 0 end
+    return nil -- some other piece of LaTeX: unknown height
+
+  elseif t == 'BulletList' or t == 'OrderedList' then
+    -- One extra line for \topsep above the list; the items themselves measure as text,
+    -- which a measurement of \tightlist showed to be slightly generous per item.
+    local h = FIT.text_line
+    for _, item in ipairs(blk.content) do
+      local ih = estimate_blocks(item)
+      if not ih then return nil end
+      h = h + ih
+    end
+    return h
+
+  elseif t == 'BlockQuote' then
+    local h = estimate_blocks(blk.content)
+    if not h then return nil end
+    return h + FIT.text_line
+
+  elseif t == 'Div' then
+    return estimate_blocks(blk.content)
+
+  elseif t == 'HorizontalRule' then
+    return FIT.text_line
+  end
+
+  -- Header (unbounded \@startsection skips), Table (longtable, which cannot be pinned at
+  -- all), Figure, DefinitionList and anything a later pandoc adds: not measured.
+  return nil
+end
+
+estimate_blocks = function(blocks)
+  local h = 0
+  for _, blk in ipairs(blocks) do
+    local bh = estimate_block(blk)
+    if not bh then return nil end
+    h = h + bh
+  end
+  return h
+end
+
+-- Can this callout be set as ONE unbreakable box on a page of its own?
+--
+-- `extras` is optional: { title = <boxed title text>, extra_height = <points> }. The title
+-- matters because a long promptref name wraps the boxed title over two or three lines.
+--
+-- Interface note for the sibling filters: this answers only "does it fit", never "should it
+-- be pinned". generateConversationCallout deliberately does not ask -- see there.
+function calloutFitsOnePage(contentBlocks, extras)
+  extras = extras or {}
+  local h = estimate_blocks(contentBlocks)
+  if not h then return false end
+
+  h = h + FIT.box + (extras.extra_height or 0)
+  if extras.title then
+    h = h + FIT.title_line * (wrapped(extras.title, FIT.title_chars) - 1)
+  end
+  return h <= FIT.budget
+end
+
+-- A callout and its two float barriers travel in ONE RawBlock.
+--
+-- keep-leadin-with-content.lua recognises a callout either as a Div (the print pipeline runs
+-- it before this filter) or as a LaTeX RawBlock containing `\begin{`, and reserves nine
+-- lines for it rather than the generic five. A barrier emitted as its own block would be
+-- what that filter sees in a pipeline that runs the two the other way round, dropping the
+-- callout to five lines and re-stranding the lead-ins rounds 5 and 6 closed.
+--
+-- \ifdefined guards the macro because book-builder is shared: a template that does not load
+-- placeins loses the barrier, not the build.
+local function barriered(latex)
+  local barrier = '\\ifdefined\\FloatBarrier\\FloatBarrier\\fi'
+  return pandoc.RawBlock('latex', barrier .. '\n' .. latex .. '\n' .. barrier)
+end
+
+-- `breakable` for a box that must be allowed to split, `breakable=false` for one that fits.
+local function breakOption(fits)
+  return fits and 'breakable=false' or 'breakable'
+end
+
 -- Generate conversation callout (chat-style with human/AI/reflection) - Print style
 --[[
   `varwidth boxed title` bounds the title box so a long one wraps instead of running off
@@ -94,6 +312,15 @@ end
   %% -- which is why the explanation lives here rather than as a LaTeX comment inside them.
 --]]
 
+-- A conversation callout is NEVER pinned, on purpose.
+--
+-- It is the only callout whose body is itself a stack of tcolorboxes -- one per Human / AI /
+-- Reflection turn -- and each of those adds its own frame rule, 0.3em of padding top and
+-- bottom and 0.5em of before/after skip. That per-turn overhead is unmeasured here, and its
+-- error would compound with the turn count, which is exactly where an underestimate stops
+-- being a cosmetic fault and hangs the build (see FIT above). None of the six instances the
+-- publisher's review and the fault detector found is a conversation callout, so there is
+-- nothing to buy with that risk. Conversation callouts do get the float barriers.
 function generateConversationCallout(content)
   local latex = [[
 \begin{tcolorbox}[
@@ -180,7 +407,7 @@ function generateConversationCallout(content)
   end
 
   latex = latex .. "\\end{tcolorbox}"
-  return pandoc.RawBlock("latex", latex)
+  return barriered(latex)
 end
 
 -- Generate prompt reference callout (prominent link with preview) - Print style
@@ -192,12 +419,27 @@ function generatePromptRefCallout(content, elem)
   local promptName = elem.attributes.title or "Prompt Reference"
   local promptUrl = elem.attributes.url or "#"
 
+  -- Separate content into description (all but last paragraph) and preview (last paragraph)
+  local numBlocks = #content
+
+  -- Four of the five orphaned tails in round 7 were THIS box: the Link: line and its
+  -- footnote are the last things in it, so when it split they were what went overleaf --
+  -- a rule and a bare URL in a box fragment at the head of the next page. Everything the
+  -- box adds below the content has to be counted, or the box is pinned a few lines short.
+  local extra = FIT.em * 0.5                                        -- \vspace{0.5em}
+    + FIT.text_line * wrapped('Link: ' .. promptName, FIT.text_chars) -- the Link: line
+    + FIT.note_base + FIT.note_line * math.max(2, wrapped(promptUrl, FIT.note_chars))
+  if numBlocks > 1 then
+    extra = extra + FIT.em * 0.3                                    -- \vspace{0.3em}
+  end
+  local fits = calloutFitsOnePage(content, { title = promptName, extra_height = extra })
+
   local latex = string.format([[
 \begin{tcolorbox}[
   colback=cyan!5!white,
   colframe=cyan!75!black,
   title={%s},
-  breakable,
+  %s,
   enhanced,
   attach boxed title to top left={yshift=-2mm, xshift=2mm},
   varwidth boxed title=0.82\linewidth,
@@ -206,11 +448,8 @@ function generatePromptRefCallout(content, elem)
   bottom=0.5em
 ]
 
-]], promptName)
+]], promptName, breakOption(fits))
 
-  -- Separate content into description (all but last paragraph) and preview (last paragraph)
-  local numBlocks = #content
-  
   if numBlocks > 1 then
     -- Multiple blocks: description is all but last, preview is last
     for i = 1, numBlocks - 1 do
@@ -240,7 +479,7 @@ function generatePromptRefCallout(content, elem)
 ]], promptUrl, promptName, promptUrl)
 
   latex = latex .. "\n\\end{tcolorbox}"
-  return pandoc.RawBlock("latex", latex)
+  return barriered(latex)
 end
 
 -- Generate LaTeX callout box (no emojis)
@@ -256,12 +495,17 @@ function generateLatexCallout(calloutType, content, elem)
     extraOptions = ",\n  left=0.5em,\n  right=0.5em"
   end
 
+  -- The p.80 instance the publisher reported was one of these: a `::: code` callout holding
+  -- a 16-source-line JSON sample that split so that "] } } } }" opened the page alone.
+  -- config.title is a fixed word ("Code", "Info", ...), so the boxed title never wraps.
+  local fits = calloutFitsOnePage(content, { title = config.title })
+
   local latex = string.format([[
 \begin{tcolorbox}[
   colback=%s!5!white,
   colframe=%s!75!black,
   title={%s},
-  breakable,
+  %s,
   enhanced,
   attach boxed title to top left={yshift=-2mm, xshift=2mm},
   varwidth boxed title=0.82\linewidth,
@@ -269,16 +513,17 @@ function generateLatexCallout(calloutType, content, elem)
   top=0.75em,
   bottom=0.5em%s
 ]
-]], config.latexcolor, config.latexcolor, config.title, config.latexcolor, extraOptions)
-  
+]], config.latexcolor, config.latexcolor, config.title, breakOption(fits),
+    config.latexcolor, extraOptions)
+
   -- Add content
   for _, block in ipairs(content) do
     latex = latex .. pandoc.write(pandoc.Pandoc({block}), "latex") .. "\n"
   end
-  
+
   latex = latex .. "\\end{tcolorbox}"
-  
-  return pandoc.RawBlock("latex", latex)
+
+  return barriered(latex)
 end
 
 -- ============================================================================

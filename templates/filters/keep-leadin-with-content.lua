@@ -78,6 +78,36 @@ local function reservation_for(nxt)
   return 5
 end
 
+-- Does a callout box come next?
+--
+-- callout-filter-print.lua emits a \FloatBarrier on each side of every callout, so that a
+-- deferred figure can no longer be dropped between a box and its own footnote. placeins'
+-- \FloatBarrier issues a \newpage when floats are actually held, and that break landed
+-- BETWEEN the lead-in and the box it introduces: "For Stale Memory Banks ...:" sat at the
+-- foot of p.156 while Figure 5.4 and the callout went to p.157. Issuing the barrier HERE,
+-- ahead of the reservation, dumps the held float first, so the lead-in and its box are
+-- placed together afterwards; the filter's own leading barrier is then a no-op.
+--
+-- Named classes rather than "any Div": a Div can be a crossref wrapper or a size switch,
+-- and dumping floats in front of one of those would cost pages for nothing. These are the
+-- fenced-div classes the callout filters recognise. A callout that has ALREADY been turned
+-- into LaTeX (a pipeline that runs the callout filter first) arrives as a RawBlock instead.
+local CALLOUT_CLASSES = { info = true, code = true, success = true, warning = true,
+                          error = true, conversation = true, promptref = true }
+
+local function callout_follows(blk)
+  if blk.t == 'Div' and blk.classes then
+    for _, class in ipairs(blk.classes) do
+      if CALLOUT_CLASSES[class] then return true end
+    end
+    return false
+  end
+  if blk.t == 'RawBlock' and blk.format == 'latex' then
+    return blk.text:match('\\begin%s*{tcolorbox}') ~= nil
+  end
+  return false
+end
+
 -- Does this block start with a table, looking through wrappers?
 --
 -- A table is not always a bare Table block: a Div (a crossref wrapper, a size switch, any
@@ -95,6 +125,23 @@ local function starts_with_table(blk)
     return blk.text:match('^%s*\\begin%s*{longtable}') ~= nil
   end
   return false
+end
+
+-- The EAGER reservation.
+--
+-- \needspace is LAZY: it lays down `\vskip 0pt plus N\baselineskip` and a -100 penalty and
+-- lets TeX decide later. That stretch is what makes a near-empty page look cheap, and it
+-- becomes visible as soon as the next legal breakpoint is a long way off -- which is exactly
+-- what an unbreakable callout makes it. Measured: p.118 of the round-8 build carried three
+-- lines and 90% white, shipped with badness 3861, because the only alternative break was
+-- past a 290pt pinned box and scored 100000. \needspaceNow decides NOW instead: it emits
+-- nothing at all when the space is there, so no stretch is left behind for TeX to exploit.
+--
+-- \needspaceNow lives in book-print.latex, so degrade to plain \needspace wherever it is
+-- undefined: another template loses this, not its build.
+local function reserve(amount)
+  return '\\ifdefined\\needspaceNow\\needspaceNow' .. amount
+      .. '\\else\\needspace' .. amount .. '\\fi'
 end
 
 function Blocks(blocks)
@@ -117,12 +164,20 @@ function Blocks(blocks)
         if is_table then
           -- A table needs the EAGER form. \needspace is lazy, and in front of a longtable
           -- the break it defers is taken inside longtable's output routine, which copies the
-          -- table head to the top of the next page AHEAD of this lead-in. See \needspaceNow
-          -- in book-print.latex. That macro exists only there, so degrade to plain
-          -- \needspace wherever it is undefined: another template loses the ghost-head fix,
-          -- not the build. Every other follower keeps the lazy \needspace unchanged.
+          -- table head to the top of the next page AHEAD of this lead-in. See reserve()
+          -- above and \needspaceNow in book-print.latex.
+          out:insert(pandoc.RawBlock('latex', reserve(amount)))
+        elseif callout_follows(nxt) then
+          -- A callout takes the EAGER form too, for the reason given at reserve(): a pinned
+          -- box puts the next legal breakpoint a whole box away, and the lazy form's stretch
+          -- then buys a three-line page.
+          -- The barrier comes first so that a held float is dumped BEFORE the reservation,
+          -- not between the lead-in and the box it introduces (that is what left "For Stale
+          -- Memory Banks ...:" at the foot of p.156 with Figure 5.4 and its callout
+          -- overleaf). \ifdefined because book-builder is shared: a template without
+          -- placeins loses the barrier, not the build.
           out:insert(pandoc.RawBlock('latex',
-            '\\ifdefined\\needspaceNow\\needspaceNow' .. amount .. '\\else\\needspace' .. amount .. '\\fi'))
+            '\\ifdefined\\FloatBarrier\\FloatBarrier\\fi' .. reserve(amount)))
         else
           out:insert(pandoc.RawBlock('latex', '\\needspace' .. amount))
         end
