@@ -22,6 +22,7 @@
     "watch": "nodemon scripts/build-book.js --target development --watch",
     "serve": "node scripts/serve-development.js",
     "test": "node scripts/test-build.js",
+    "test:unit": "jest",
     "pandoc:test": "pandoc --version && xelatex --version",
     "setup": "npm run fonts:install && npm run pandoc:test",
     "dev": "npm run build:development && npm run serve"
@@ -84,5 +85,16 @@
     "styles/",
     "fonts/",
     "README.md"
-  ]
+  ],
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "<rootDir>/scripts/__tests__/**/*.test.js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/examples/",
+      "/publisher/"
+    ]
+  }
 }

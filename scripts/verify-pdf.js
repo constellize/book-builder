@@ -183,28 +183,141 @@ function checkPdf(file, { expectPrint }) {
   return findings;
 }
 
-const targets = [
-  { file: 'build/print/constellize-book.pdf', expectPrint: true },
-  { file: 'build/digital/constellize-book.pdf', expectPrint: false },
-];
+// --- typeset faults: a COMPARATOR, not a verdict ----------------------------
+// detect-typeset-faults.py scans the finished PDF for the page-break faults a publisher
+// reports (figure inside a callout, orphaned tails, ...). It has twice reported zero on
+// PDFs where humans found faults, so this check never claims the pages are right. It
+// only says what is NEW and what is FIXED relative to a stored baseline.
+//
+// Two rules keep it safe in a build system shared by other books:
+//   * No baseline yet -> write one and carry on. A missing baseline is not a failure.
+//   * A detector that cannot run (bad PDF, no pdftotext, no python) THROWS. It is never
+//     read as "no faults": that is exactly the failure the detector was fixed to avoid.
+const DETECTOR = path.join(__dirname, 'detect-typeset-faults.py');
+const FAULT_CLASSES = ['1_figure_in_callout', '2_orphan_tail', '3_word_across_figure',
+  '4_widow_orphan', '5_missing_glyph'];
 
-let errors = 0, warnings = 0;
-console.log('PDF conformance checks\n');
-for (const t of targets) {
-  const rel = path.relative(process.cwd(), t.file);
-  console.log(`${DIM}${rel}${RST}`);
-  const findings = checkPdf(t.file, t);
-  for (const f of findings) {
-    if (f.sev === 'error') { errors++; console.log(`  ${RED}ERROR${RST}   ${f.rule} — ${f.msg}`); }
-    else if (f.sev === 'warning') { warnings++; console.log(`  ${YEL}warning${RST} ${f.rule} — ${f.msg}`); }
-    else console.log(`  ${DIM}info    ${f.rule} — ${f.msg}${RST}`);
-    if (f.detail) console.log(`${DIM}${f.detail.split('\n').map((l) => '            ' + l).join('\n')}${RST}`);
+// The digital PDF carries ~36 known faults and is out of scope for this round.
+const isDigitalTarget = (file) => path.resolve(file).split(path.sep).includes('digital');
+
+function flatten(report) {
+  return FAULT_CLASSES.flatMap((cls) =>
+    (report[cls] || []).map((f) => ({ cls, page: f.page, kind: f.kind })));
+}
+
+const keyOf = (f) => `${f.cls}|${f.page}|${f.kind}`;
+
+// Both arguments are flat lists of {cls, page, kind}. Identity is class+page+kind: page 105
+// reads as a class-2 fault and page 215 as class 1, and the same page in two classes is
+// two findings. The detector's free `text` is excluded because it is incidental.
+function compareToBaseline(current, baseline) {
+  const had = new Set(baseline.map(keyOf));
+  const has = new Set(current.map(keyOf));
+  return {
+    newFindings: current.filter((f) => !had.has(keyOf(f))),
+    fixedFindings: baseline.filter((f) => !has.has(keyOf(f))),
+  };
+}
+
+function runDetector(pdfPath) {
+  // Python runs through uv in this project. The detector is stdlib-only.
+  const out = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'typeset-')), 'out.json');
+  try {
+    execFileSync('uv', ['run', '--project', path.join(__dirname, '..'), 'python', DETECTOR,
+      pdfPath, '--json', out], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const report = JSON.parse(fs.readFileSync(out, 'utf8'));
+    if (!(report.page_count > 0)) throw new Error('detector reported no pages');
+    return report;
+  } catch (e) {
+    const why = ((e.stderr || '').toString().trim().split('\n').pop()) || e.message;
+    throw new Error(`typeset-fault detector failed on ${pdfPath}: ${why}`);
+  } finally {
+    fs.rmSync(path.dirname(out), { recursive: true, force: true });
   }
-  console.log('');
 }
 
-if (errors) {
-  console.log(`${RED}${errors} error(s)${RST}, ${warnings} warning(s)`);
-  process.exit(1);
+function checkTypesetFaults(pdfPath, baselinePath) {
+  if (isDigitalTarget(pdfPath)) {
+    return { newFindings: [], fixedFindings: [], skipped: true, baselineWritten: false };
+  }
+  const report = runDetector(pdfPath);
+  const current = flatten(report);
+
+  if (!fs.existsSync(baselinePath)) {
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    fs.writeFileSync(baselinePath, JSON.stringify(report, null, 1) + '\n');
+    return { newFindings: [], fixedFindings: [], skipped: false, baselineWritten: true,
+      pageCount: report.page_count, currentCount: current.length };
+  }
+
+  let stored;
+  try {
+    stored = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+  } catch (e) {
+    throw new Error(`typeset baseline ${baselinePath} is unreadable (${e.message}); ` +
+      'not overwriting it -- fix or delete it deliberately');
+  }
+  return { ...compareToBaseline(current, flatten(stored)), skipped: false, baselineWritten: false,
+    pageCount: report.page_count, currentCount: current.length, baselinePageCount: stored.page_count };
 }
-console.log(`${GRN}No conformance errors${RST}${warnings ? `, ${warnings} warning(s)` : ''}`);
+
+const describeFinding = (f) => `${f.cls.replace('_', ' ')}  p${f.page}  ${f.kind}`;
+
+module.exports = { checkPdf, compareToBaseline, checkTypesetFaults };
+
+if (require.main === module) {
+  // The baseline is per book and tracked with it. Override with TYPESET_BASELINE.
+  const BASELINE = process.env.TYPESET_BASELINE || 'qa/typeset-baseline.json';
+  const targets = [
+    { file: 'build/print/constellize-book.pdf', expectPrint: true },
+    { file: 'build/digital/constellize-book.pdf', expectPrint: false },
+  ];
+
+  let errors = 0, warnings = 0;
+  console.log('PDF conformance checks\n');
+  for (const t of targets) {
+    const rel = path.relative(process.cwd(), t.file);
+    console.log(`${DIM}${rel}${RST}`);
+    const findings = checkPdf(t.file, t);
+
+    // Typeset-fault comparison, after the conformance checks, print target only.
+    if (!t.expectPrint) {
+      console.log(`  ${DIM}info    typeset-faults — SKIPPED for the digital target ` +
+        `(deferred: ~36 known faults, out of scope this round)${RST}`);
+    } else if (fs.existsSync(t.file)) {
+      try {
+        const r = checkTypesetFaults(t.file, BASELINE);
+        if (r.baselineWritten) {
+          console.log(`  ${DIM}info    typeset-faults — no baseline at ${BASELINE}; wrote one ` +
+            `(${r.currentCount} finding(s), ${r.pageCount}pp). Nothing to compare against yet.${RST}`);
+        } else {
+          console.log(`  ${DIM}info    typeset-faults — comparison against ${BASELINE}, NOT a ` +
+            `verdict that the pages are correct (the detector has missed real faults before): ` +
+            `${r.newFindings.length} new, ${r.fixedFindings.length} fixed` +
+            (r.baselinePageCount !== r.pageCount
+              ? `; page count ${r.baselinePageCount} -> ${r.pageCount}, so page numbers may have shifted`
+              : '') + RST);
+          for (const f of r.newFindings) { warnings++; console.log(`  ${YEL}warning${RST} typeset-faults NEW   ${describeFinding(f)}`); }
+          for (const f of r.fixedFindings) console.log(`  ${GRN}fixed  ${RST} typeset-faults FIXED ${describeFinding(f)}`);
+        }
+      } catch (e) {
+        errors++;
+        console.log(`  ${RED}ERROR${RST}   typeset-faults — ${e.message}`);
+      }
+    }
+
+    for (const f of findings) {
+      if (f.sev === 'error') { errors++; console.log(`  ${RED}ERROR${RST}   ${f.rule} — ${f.msg}`); }
+      else if (f.sev === 'warning') { warnings++; console.log(`  ${YEL}warning${RST} ${f.rule} — ${f.msg}`); }
+      else console.log(`  ${DIM}info    ${f.rule} — ${f.msg}${RST}`);
+      if (f.detail) console.log(`${DIM}${f.detail.split('\n').map((l) => '            ' + l).join('\n')}${RST}`);
+    }
+    console.log('');
+  }
+
+  if (errors) {
+    console.log(`${RED}${errors} error(s)${RST}, ${warnings} warning(s)`);
+    process.exit(1);
+  }
+  console.log(`${GRN}No conformance errors${RST}${warnings ? `, ${warnings} warning(s)` : ''}`);
+}
