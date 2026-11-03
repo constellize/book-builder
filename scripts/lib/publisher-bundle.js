@@ -9,7 +9,7 @@ const { execFileSync } = require('child_process');
 // publisher-bundle -> publisher-guard, and never back.
 const { BUNDLE_META_FILES, KIND, tokenize } = require('./publisher-guard.js');
 
-/** The 13 files build-book.js reads, in the order it reads them. */
+/** The files build-book.js reads, in the order it reads them. */
 const EXPECTED_FILES = Object.freeze([
   'foreword-faq.md',
   'introduction.md',
@@ -205,6 +205,132 @@ function countQueries(text) {
 }
 
 /**
+ * CHANGES.md tells the publisher what moved since the round they last read.
+ *
+ * WHY IT EXISTS. Rounds are incremental: the publisher has already copy-edited everything
+ * in the bundle except the parts that changed after they saw it. Round 8 sent back four
+ * chapters with small edits and a brand-new appendix, and nothing in the package said so —
+ * so the only ways to find them were to re-read 256 pages or to diff two zips by hand.
+ * Text nobody flags is text nobody edits: Appendix C and two new passages in chapter 9 had
+ * never been read by an editor at all.
+ *
+ * WHY LINE DIFFS AND NOT paragraphBlocks(). These files are written one paragraph per line
+ * (the README asks the publisher to keep them that way), so a changed line IS a changed
+ * paragraph. paragraphBlocks() is the wrong tool here despite being right next door: it
+ * only reports blocks at divDepth 0, so every word inside a `:::` callout is invisible to
+ * it — and callout text is prose the publisher edits. Round 8's chapter 4 edit was inside
+ * a promptref box and would have been reported as "no prose change".
+ *
+ * A REWORDED paragraph shows up as one removal and one addition rather than as an edit.
+ * That is deliberate: pairing them means guessing which removal goes with which addition,
+ * and a wrong guess prints a confident, false "changed from X to Y". Two honest lists beat
+ * one clever one.
+ *
+ * Structural lines are dropped because they are not the publisher's to edit and listing
+ * them buries the prose: fences, image references, and anything inside a code block.
+ */
+function isStructuralLine(line) {
+  const t = line.trim();
+  if (!t) return true;
+  if (t.startsWith(':::')) return true;            // callout fences
+  // An image reference ALONE on its line is structural. One with prose after it is not:
+  // ch6.md had an image and a paragraph sharing a line (which is also why it rendered as
+  // an inline image with no caption), and matching on the prefix alone hid that paragraph
+  // from this diff entirely -- the edit showed as an addition with no matching removal.
+  if (/^!\[[^\]]*\]\([^)]*\)\s*(\{[^}]*\})?$/.test(t)) return true;
+  return false;
+}
+
+/** Prose lines of a file, with code blocks removed. */
+function proseLines(text) {
+  const out = [];
+  let inFence = false;
+  for (const raw of String(text).split('\n')) {
+    if (/^\s*```/.test(raw)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    if (isStructuralLine(raw)) continue;
+    out.push(raw.trim());
+  }
+  return out;
+}
+
+/** Added and removed prose lines between two versions of one file. */
+function proseDelta(prevText, curText) {
+  const before = proseLines(prevText);
+  const after = proseLines(curText);
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  return {
+    added: after.filter((l) => !beforeSet.has(l)),
+    removed: before.filter((l) => !afterSet.has(l)),
+  };
+}
+
+/** One quoted excerpt, short enough to scan and long enough to find in the file. */
+function quoteLine(line, max = 160) {
+  const t = collapse(line);
+  return t.length <= max ? t : t.slice(0, max - 1) + '…';
+}
+
+/**
+ * @param {string} label         this round, e.g. "round-8"
+ * @param {string|null} prevLabel the round being compared against, or null if none
+ * @param {Array<{name,prevText,curText}>} entries prevText is null for a new file
+ */
+function renderChanges({ label, prevLabel, entries }) {
+  const head = `# What changed — ${label}\n\n`;
+  if (!prevLabel) {
+    return head + 'This is the first round, so everything in the package is new.\n';
+  }
+
+  const New = entries.filter((e) => e.prevText === null);
+  const scored = entries
+    .filter((e) => e.prevText !== null)
+    .map((e) => ({ name: e.name, ...proseDelta(e.prevText, e.curText) }));
+  const edited = scored.filter((e) => e.added.length || e.removed.length);
+  const clean = scored.filter((e) => !e.added.length && !e.removed.length);
+
+  let out = head +
+    `Everything here was last sent as **${prevLabel}**. This note lists only what is\n` +
+    `different since then, so you can go straight to it rather than re-reading the book.\n\n` +
+    `Paragraphs are listed as removed and added separately. A reworded paragraph therefore\n` +
+    `appears twice — once in each list — rather than as a before/after pair.\n\n`;
+
+  if (New.length) {
+    out += `## New files — never copy-edited\n\n` +
+      `These have had no editorial pass at all. They are the priority.\n\n`;
+    for (const e of New) {
+      out += `- **${e.name}** — new in ${label}, ${proseLines(e.curText).length} paragraphs.\n`;
+    }
+    out += '\n';
+  }
+
+  if (edited.length) {
+    out += `## Changed prose\n\n`;
+    for (const e of edited) {
+      out += `### ${e.name}\n\n`;
+      if (e.removed.length) {
+        out += `Removed (${e.removed.length}):\n\n`;
+        for (const l of e.removed) out += `- ~~${quoteLine(l)}~~\n`;
+        out += '\n';
+      }
+      if (e.added.length) {
+        out += `Added (${e.added.length}):\n\n`;
+        for (const l of e.added) out += `- ${quoteLine(l)}\n`;
+        out += '\n';
+      }
+    }
+  }
+
+  if (clean.length) {
+    out += `## Unchanged since ${prevLabel}\n\n` +
+      clean.map((e) => e.name).join(', ') + '\n\n' +
+      `Your edits to these were already applied, or you had none. No need to re-read them.\n`;
+  }
+  return out;
+}
+
+/**
  * MANIFEST.TXT is plain text so the publisher can read it, and so a human can tell at
  * a glance which round a returned bundle belongs to.
  *
@@ -298,6 +424,6 @@ module.exports = {
   EXPECTED_FILES, BUNDLE_META_FILES, resolveLabel,
   normalizeBuffer, readAndNormalize, dewrapParagraphs,
   sha256, renderManifest, parseManifest, verifyManifest,
-  renderQueries, countQueries,
+  renderQueries, countQueries, renderChanges, proseLines, proseDelta,
   assertArchiveTools, zipDir, unzipTo,
 };

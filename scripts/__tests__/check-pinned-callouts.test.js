@@ -369,7 +369,10 @@ measuring('measuring real boxes', () => {
     const pinnedBox = box.replace(/^(\s*)breakable,$/m, '$1breakable=false,');
     expect(pinnedBox).not.toBe(box);
     const latent = original
-      .replace('%%CALLOUTFIT type=code pinned=0', '%%CALLOUTFIT type=code pinned=1')
+      // Matched by KEY, not by the whole line: the provenance gained an `idx=` field when
+      // measured heights started travelling back to the filter, and a fixture pinned to the
+      // exact key order silently stops matching and tests nothing.
+      .replace(/(%%CALLOUTFIT[^\n]*?)pinned=0/, '$1pinned=1')
       .replace(box, pinnedBox);
     expect(findCallouts(latent)[0].optionsPinned).toBe(true);
     const f = path.join(tmp, 'latent.tex');
@@ -411,7 +414,8 @@ measuring('measuring real boxes', () => {
   test('an estimate that runs low is reported even when the box fits', () => {
     const texPath = printTex(`${codeCallout(8)}\n`, tmp);
     const lowered = fs.readFileSync(texPath, 'utf8')
-      .replace(/^(%%CALLOUTFIT type=code pinned=1 est=)[0-9.]+/m, '$11.00');
+      // Keyed on `est=` alone, for the same reason as the pinned=0 replacement above.
+      .replace(/^(%%CALLOUTFIT[^\n]*?est=)[0-9.]+/m, '$11.00');
     const f = path.join(tmp, 'lowered.tex');
     fs.writeFileSync(f, lowered);
     const r = checkPinnedCallouts({

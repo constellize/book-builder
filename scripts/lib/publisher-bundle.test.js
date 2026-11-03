@@ -9,12 +9,12 @@ const t = (name, fn) => { n++; try { fn(); console.log('  [ OK ] ' + name); } ca
 
 console.log('=== constants ===');
 
-t('lists the 13 source files in build order', () => {
+t('lists the 14 source files in build order', () => {
   assert.deepStrictEqual(B.EXPECTED_FILES, [
     'foreword-faq.md', 'introduction.md',
     'ch1.md', 'ch2.md', 'ch3.md', 'ch4.md', 'ch5.md',
     'ch6.md', 'ch7.md', 'ch8.md', 'ch9.md',
-    'appA.md', 'appB.md',
+    'appA.md', 'appB.md', 'appC.md',
   ]);
 });
 
@@ -264,6 +264,60 @@ t('reports a tampered hash', () => {
 t('reports a file the manifest does not list', () => {
   const problems = B.verifyManifest(MANIFEST_INPUT, { 'ch1.md': 'one\n' });
   assert.ok(problems.some((p) => p.includes('ch2.md')));
+});
+
+console.log('\n=== CHANGES.md ===');
+
+t('sees prose INSIDE a callout, which paragraphBlocks cannot', () => {
+  const before = '::: {.promptref title="X"}\n**Do the thing** at length.\n:::\n';
+  const after = '::: {.promptref title="X"}\n**Do the thing** briefly.\n:::\n';
+  const d = B.proseDelta(before, after);
+  assert.strictEqual(d.added.length, 1);
+  assert.strictEqual(d.removed.length, 1);
+  assert.ok(d.added[0].includes('briefly'));
+});
+
+t('ignores fences, bare image lines and code, but keeps prose after an image', () => {
+  const text = [
+    '::: info',
+    '![Alt text](images/a.png){#fig:a}',
+    '![Alt text](images/b.png) And prose sharing the line.',
+    '```',
+    'code that must not be reported',
+    '```',
+    'Real prose.',
+    ':::',
+  ].join('\n');
+  const lines = B.proseLines(text);
+  assert.ok(!lines.some((l) => l.includes('code that must not')));
+  assert.ok(!lines.some((l) => l === '![Alt text](images/a.png){#fig:a}'));
+  assert.ok(lines.some((l) => l.includes('And prose sharing the line')));
+  assert.ok(lines.includes('Real prose.'));
+});
+
+t('marks a file absent from the previous round as NEW, not rewritten', () => {
+  const out = B.renderChanges({
+    label: 'round-8', prevLabel: 'round-7',
+    entries: [{ name: 'appC.md', prevText: null, curText: 'One.\nTwo.\n' }],
+  });
+  assert.ok(out.includes('New files — never copy-edited'));
+  assert.ok(out.includes('appC.md'));
+  assert.ok(!out.includes('## Changed prose'));
+});
+
+t('lists an untouched file as unchanged rather than silently omitting it', () => {
+  const same = 'Identical prose.\n';
+  const out = B.renderChanges({
+    label: 'round-8', prevLabel: 'round-7',
+    entries: [{ name: 'ch1.md', prevText: same, curText: same }],
+  });
+  assert.ok(out.includes('Unchanged since round-7'));
+  assert.ok(out.includes('ch1.md'));
+});
+
+t('a first round has no previous tag to compare against', () => {
+  const out = B.renderChanges({ label: 'round-1', prevLabel: null, entries: [] });
+  assert.ok(/first round/i.test(out));
 });
 
 console.log(`\n${n - f}/${n} passed`);

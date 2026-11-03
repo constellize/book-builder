@@ -268,7 +268,7 @@ function makeFinding(file, rule, message, detail) {
 }
 
 // Bundle files that are metadata, not book sources.
-const BUNDLE_META_FILES = new Set(['README.md', 'MANIFEST.TXT', 'QUERIES.md']);
+const BUNDLE_META_FILES = new Set(['README.md', 'MANIFEST.TXT', 'QUERIES.md', 'CHANGES.md']);
 
 const CHANGE_VOLUME_THRESHOLD = 0.4;
 

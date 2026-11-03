@@ -22,6 +22,40 @@ const bookConfig = require('../config/book.config.js');
 
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
+/** A file's content at a tag, or null when the path did not exist there (a NEW file). */
+function showOrNull(cwd, tag, name) {
+  try {
+    // stderr ignored: a missing path is the expected answer for a new file, and git's
+    // "exists on disk, but not in <tag>" would otherwise print as if it were an error.
+    return execFileSync('git', ['show', `${tag}:${name}`],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The round immediately before this one, by ROUND NUMBER rather than tag creation order.
+ *
+ * Sorting numerically matters: `git tag -l` sorts lexically, which puts round-10 between
+ * round-1 and round-2, so the tenth round would diff against the first. Only numeric
+ * `round-N` labels take part -- a hand-made tag like `publisher/copyedit-final` has no
+ * place in a sequence and is skipped rather than guessed at.
+ */
+function previousRoundTag(existingTags, label) {
+  const num = (s) => {
+    const m = /^(?:publisher\/)?round-(\d+)$/.exec(s);
+    return m ? Number(m[1]) : null;
+  };
+  const here = num(label);
+  if (here === null) return null;
+  const earlier = existingTags
+    .map((t) => ({ tag: t, n: num(t) }))
+    .filter((x) => x.n !== null && x.n < here)
+    .sort((a, b) => b.n - a.n);
+  return earlier.length ? earlier[0].tag : null;
+}
+
 /**
  * B.EXPECTED_FILES is a second declaration of something book.config.js already states:
  * the build reads `foreword-faq.md`, `introduction.md`, `ch[1-9].md`, `app[AB].md`.
@@ -83,6 +117,13 @@ function buildReadme({ label, date, edition, version, images, sources }) {
 Thank you for working on this. These are the book's source files, exactly as the
 build system reads them. Editing them directly means your changes go straight into
 the book — nothing has to be re-keyed.
+
+## Start with \`CHANGES.md\`
+
+Most of this package you have already read. \`CHANGES.md\` lists what is different
+since the last round — any file that is new, and every paragraph that was added or
+removed — so you can go straight to the new material instead of re-reading the book.
+Files it lists as unchanged need no second pass.
 
 ## Reading order
 
@@ -398,6 +439,28 @@ function main() {
         version: readMetadataField(contentDir, tag, 'version', 'unknown'),
       }), 'utf8');
     fs.writeFileSync(path.join(bundleDir, 'QUERIES.md'), B.renderQueries(label), 'utf8');
+
+    // CHANGES.md: what moved since the round the publisher last read. Without it the only
+    // ways to find an incremental edit are to re-read the whole book or to diff two zips,
+    // and text nobody flags is text nobody edits. See renderChanges() for why it is a line
+    // diff rather than paragraphBlocks().
+    const prevTag = previousRoundTag(existingTags, label);
+    fs.writeFileSync(path.join(bundleDir, 'CHANGES.md'), B.renderChanges({
+      label,
+      prevLabel: prevTag ? prevTag.replace(/^publisher\//, '') : null,
+      entries: B.EXPECTED_FILES.map((name) => ({
+        name,
+        // A file that did not exist in the previous round is NEW, not "entirely rewritten".
+        // git show exits non-zero for a path absent at that tag, which is how we tell.
+        prevText: prevTag ? showOrNull(contentDir, prevTag, name) : null,
+        curText: fs.readFileSync(path.join(bundleDir, name), 'utf8'),
+      })),
+    }), 'utf8');
+    if (prevTag) {
+      console.log(chalk.gray(`  CHANGES.md compares against ${prevTag}`));
+    } else {
+      console.log(chalk.yellow('  CHANGES.md: no earlier round found; everything marked new'));
+    }
 
     const zipPath = path.join(outgoingDir, `${bundleName}.zip`);
     fs.removeSync(zipPath);
