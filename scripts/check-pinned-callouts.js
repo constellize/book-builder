@@ -171,8 +171,17 @@ function findCallouts(tex) {
     // comment is the authority on what it was pinned AGAINST. If they disagree, something
     // between the filter and here rewrote the .tex and nothing downstream can be trusted.
     const optionsPinned = env ? /(^|[\s,[])breakable=false(\s*[,\]]|$)/m.test(env.source) : null;
+    // The filter stamps its own ordinal as `idx=`. This script derives the same number by
+    // counting %%CALLOUTFIT lines, and the two MUST agree, because that ordinal is the key
+    // the measured heights travel back on: a silent off-by-one would reserve one box's height
+    // in front of a different box. Mismatch is recorded per callout and raised by the caller;
+    // a .tex from an older filter has no idx= at all, which is not a mismatch, just absent.
+    const derivedIndex = callouts.length + 1;
+    const stampedIndex = prov.idx === undefined ? null : Number(prov.idx);
     callouts.push({
-      index: callouts.length + 1,
+      index: derivedIndex,
+      stampedIndex,
+      indexMismatch: stampedIndex !== null && stampedIndex !== derivedIndex,
       type: prov.type || '?',
       title: prov.title || '',
       estimate: prov.est === '?' || prov.est === undefined ? null : Number(prov.est),
@@ -327,6 +336,7 @@ function measurePinnedCallouts(options) {
   }
 
   const callouts = findCallouts(tex);
+  const misIndexed = callouts.filter((c) => c.indexMismatch);
   const inconsistent = callouts.filter(
     (c) => c.source !== null && c.declaredPinned !== c.optionsPinned);
   const pinned = callouts.filter((c) => c.optionsPinned === true);
@@ -334,16 +344,21 @@ function measurePinnedCallouts(options) {
 
   log(`   callouts in the .tex: ${callouts.length} (pinned: ${pinned.length}, breakable: ${callouts.length - pinned.length})`);
 
-  if (inconsistent.length > 0 || unparseable.length > 0) {
+  if (inconsistent.length > 0 || unparseable.length > 0 || misIndexed.length > 0) {
     // Refuse to answer rather than answer about the wrong boxes.
     return {
       status: 'fail',
-      reason: 'the .tex does not parse as the filter emits it',
-      failures: [...inconsistent, ...unparseable].map((c) => ({
+      reason: misIndexed.length > 0 && inconsistent.length === 0 && unparseable.length === 0
+        ? 'the filter\'s callout ordinals do not match this script\'s, so measured heights ' +
+          'would be keyed to the wrong boxes'
+        : 'the .tex does not parse as the filter emits it',
+      failures: [...inconsistent, ...unparseable, ...misIndexed].map((c) => ({
         ...c,
-        why: c.source === null
-          ? 'no \\begin{tcolorbox}...\\end{tcolorbox} found after its %%CALLOUTFIT line'
-          : `%%CALLOUTFIT says pinned=${c.declaredPinned ? 1 : 0} but the box options say ${c.optionsPinned ? 'breakable=false' : 'breakable'}`,
+        why: c.indexMismatch
+          ? `%%CALLOUTFIT says idx=${c.stampedIndex} but this is callout ${c.index} in document order`
+          : c.source === null
+            ? 'no \\begin{tcolorbox}...\\end{tcolorbox} found after its %%CALLOUTFIT line'
+            : `%%CALLOUTFIT says pinned=${c.declaredPinned ? 1 : 0} but the box options say ${c.optionsPinned ? 'breakable=false' : 'breakable'}`,
       })),
       drift: [], callouts,
     };

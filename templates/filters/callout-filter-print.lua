@@ -254,6 +254,40 @@ local function readPinTitles(meta)
   end
 end
 
+-- MEASURED BOX HEIGHTS, from the pre-flight pass. ------------------------------------------
+--
+-- build-book.js already runs pandoc twice: once to emit preflight.tex, which
+-- check-pinned-callouts.js measures box by box under real xelatex, and once to build the PDF.
+-- Until now the second run learned nothing from the first, so the lead-in reservation had to
+-- work from estimate_blocks(), which is deliberately conservative and runs ~15% high on a
+-- promptref. That padding is not free: it is the sole reason two callouts totalling 538.6pt
+-- sat on separate pages of a 542pt text block (p.102/p.103 of the 256-page build), and it
+-- cost a page every time it happened.
+--
+-- The pre-flight now hands those measurements back as `callout-measured-heights`, a
+-- `idx:height` list. A measured height is the box under the real preamble at the real width,
+-- so the reservation stops guessing. The height does NOT depend on the reservation -- a box's
+-- height is set by its content and column width, not by where the page breaks -- so there is
+-- no feedback loop and no second measuring pass is needed.
+--
+-- MEASURED HEIGHTS NEVER WIDEN THE PIN DECISION. calloutFitsOnePage() keeps the raw estimate:
+-- under-estimating THERE pins a box that does not fit and hangs xelatex (see THE CLIFF), and
+-- a measurement taken from a previous run must never be what unlocks a pin. This map is read
+-- only by the reservation, where being wrong costs blank paper and nothing else.
+local MEASURED_HEIGHTS = {}
+
+local function readMeasuredHeights(meta)
+  local declared = meta and meta['callout-measured-heights']
+  if declared == nil then return end
+  for pair in (pandoc.utils.stringify(declared) .. ';'):gmatch('(.-);') do
+    local idx, pt = pair:match('^%s*(%d+)%s*:%s*([%d%.]+)%s*$')
+    idx, pt = tonumber(idx), tonumber(pt)
+    -- A non-positive or absurd height means the pre-flight parsed something it should not
+    -- have; drop it and let that box fall back to the estimate rather than reserve nonsense.
+    if idx and pt and pt > 0 and pt < 2000 then MEASURED_HEIGHTS[idx] = pt end
+  end
+end
+
 -- Announce any title that matched no callout. A list that silently matches nothing is the
 -- failure this whole round kept hitting: a guard that reports success while measuring nothing.
 -- Written to stderr rather than raised, because a stale entry must not stop a build -- but it
@@ -652,7 +686,16 @@ end
 -- disagree. `fits=` records the fit answer alone, so the check can still report how close an
 -- unpinned box came -- since round 8's second pass most unpinned boxes fit and were left
 -- breakable on purpose, and without this key that distinction is unrecoverable from the .tex.
+-- `idx` is the callout's 1-based ordinal in document order, counting EVERY callout this
+-- filter emits, pinned or not. check-pinned-callouts.js derives the same number by counting
+-- %%CALLOUTFIT lines in the .tex (findCallouts: `index: callouts.length + 1`), so the two
+-- agree by construction -- and the check asserts it rather than trusting it. The ordinal is
+-- what keys measured heights back into this filter on the second pass; titles cannot, because
+-- every `::: code` box is titled "Code".
+local CALLOUT_ORDINAL = 0
+
 local function emitFitProvenance(calloutType, pinned, estimate, title, fits)
+  CALLOUT_ORDINAL = CALLOUT_ORDINAL + 1
   -- One line, always. A title is an attribute value and so cannot contain a newline, but a
   -- control character or a stray `\n` from a future caller would comment out the
   -- \begin{tcolorbox} that follows, so it is flattened and bounded rather than trusted.
@@ -662,7 +705,8 @@ local function emitFitProvenance(calloutType, pinned, estimate, title, fits)
     :gsub('^%s*(.-)%s*$', '%1')
   if charcount(safe) > 180 then safe = safe:sub(1, 180) end
   return string.format(
-    '%%%%CALLOUTFIT type=%s pinned=%d est=%s budget=%s fits=%d title=%s',
+    '%%%%CALLOUTFIT idx=%d type=%s pinned=%d est=%s budget=%s fits=%d title=%s',
+    CALLOUT_ORDINAL,
     calloutType,
     pinned and 1 or 0,
     estimate and string.format('%.2f', estimate) or '?',
@@ -1177,6 +1221,12 @@ local function pinned_estimate(blk)
           and (blk.format == 'latex' or blk.format == 'tex')) then return nil end
   local prov = blk.text:match('%%%%CALLOUTFIT[^\n]*')
   if not prov or not prov:match('pinned=1') then return nil end
+  -- Measured first: the pre-flight put real xelatex over this exact box. The de-biased
+  -- estimate is the fallback for the first build of a tree (no pre-flight yet), for a box the
+  -- pre-flight could not measure, and for any consumer running this filter outside
+  -- build-book.js. See MEASURED_HEIGHTS above for why the fit decision does not get this.
+  local idx = tonumber(prov:match('idx=(%d+)'))
+  if idx and MEASURED_HEIGHTS[idx] then return MEASURED_HEIGHTS[idx] end
   local est = tonumber(prov:match('est=([%d%.]+)'))
   if not est then return nil end
   return est * (RESERVE_FACTOR[prov:match('type=(%a+)')] or 1.0)
@@ -1218,7 +1268,7 @@ end
 -- can see document metadata.
 return {
   {
-    Meta = function(meta) readPinBudget(meta); readPinTitles(meta) end
+    Meta = function(meta) readPinBudget(meta); readPinTitles(meta); readMeasuredHeights(meta) end
   },
   {
     Div = Div,

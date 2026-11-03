@@ -942,7 +942,7 @@ class BookBuilder {
       // about to fail the same way with a better message. Warn and let it.
       console.log(chalk.yellow(
         `⚠️  Pre-flight fit check NOT CHECKED: pandoc could not emit LaTeX (${error.message})`));
-      return;
+      return [];
     }
 
     const result = checkPinnedCallouts({
@@ -960,6 +960,16 @@ class BookBuilder {
         "   This is a HARD failure on purpose: an unbreakable box taller than the page does\n" +
         "   not warn and does not overfull, it makes xelatex ship empty pages forever.");
     }
+
+    // Hand the real heights to the real run. The pre-flight has just put xelatex over every
+    // pinned box; without this the build run reserves space from estimate_blocks(), which is
+    // ~15% high on a promptref and in round 8 was the sole reason two callouts totalling
+    // 538.6pt would not share a 542pt page. See MEASURED_HEIGHTS in callout-filter-print.lua.
+    // Keyed on the filter's own callout ordinal, which checkPinnedCallouts has just asserted
+    // matches its own count.
+    return (result.measured || [])
+      .filter((b) => Number.isFinite(b.measured) && b.measured > 0)
+      .map((b) => `${b.index}:${b.measured.toFixed(2)}`);
   }
 
   /**
@@ -1239,12 +1249,8 @@ class BookBuilder {
     pandocArgs.push(`--metadata=codepromptu-repo-pattern:${codepromptuPattern}`);
     pandocArgs.push(`--metadata=site-pattern:${sitePattern}`);
 
-    const pandocCommand = pandocArgs.join(" ");
-
-    if (this.options.verbose) {
-      console.log(chalk.gray(`Command: ${pandocCommand}`));
-    }
-
+    // NOT joined yet. The pre-flight below derives its .tex command from pandocArgs and then
+    // appends the measured heights to them, so the command string has to be built after it.
     const execOptions = {
       stdio: this.options.verbose ? "inherit" : "pipe",
       cwd: this.rootDir,
@@ -1291,7 +1297,24 @@ class BookBuilder {
     // the wrong boxes.
     // ------------------------------------------------------------------
     if (isPdfTarget && declaredPinBudget !== null) {
-      await this.preflightPinnedCallouts(pandocArgs, execOptions);
+      const measured = await this.preflightPinnedCallouts(pandocArgs, execOptions);
+      if (measured && measured.length) {
+        // Appended AFTER the pre-flight derived its own command, so the .tex that was measured
+        // is the one the filter produced WITHOUT these heights. That ordering matters: a box's
+        // height depends on its content and the column width, never on where the page breaks,
+        // so measuring without them and building with them is sound and converges in one pass.
+        // The value is digits, colons and semicolons only, so it needs no shell escaping
+        // beyond the quotes -- but it is quoted anyway, because an unquoted --metadata with a
+        // semicolon in it was executed by /bin/sh earlier this round.
+        pandocArgs.push(`--metadata="callout-measured-heights:${measured.join(';')}"`);
+        console.log(chalk.gray(
+          `   reservations will use ${measured.length} measured box height(s)`));
+      }
+    }
+
+    const pandocCommand = pandocArgs.join(" ");
+    if (this.options.verbose) {
+      console.log(chalk.gray(`Command: ${pandocCommand}`));
     }
 
     try {
