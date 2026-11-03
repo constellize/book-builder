@@ -164,13 +164,23 @@ local FIT = {
                         -- justification and for bold or italic runs that set wider)
 
   code_line   = 14.40,  -- one rendered line of minted at \setminted fontsize=\small
-  code_chars  = 48,     -- characters per RENDERED line inside a code callout. The geometric
+  code_chars  = 48,     -- characters on the FIRST rendered line of a code line. The geometric
                         -- measure takes 56, but breaklines/breakanywhere break at the last
                         -- break point BEFORE the measure and indent the continuation under
                         -- the hook symbol, so a wrapped line really gets about 48.
+                        --
+                        -- A CONTINUATION LINE GETS FEWER THAN THIS -- see wrapped_code().
+  code_tab    = 8,      -- columns a leading tab occupies: fvextra's `tabsize` default, which
+                        -- \setminted does not override. Only reached by a tab-indented
+                        -- source; this book has none anywhere.
   code_pad    =  6.30,  -- fancyvrb's own space above and below a minted block
 
-  note_base   = 10.00,  -- footnote rule and \skip\footins inside the box
+  note_base   = 10.19,  -- footnote rule and \skip\footins inside the box.
+                        --
+                        -- MEASURED 10.19, and it was 10.00 until 2026-11-02. A rounded-down
+                        -- constant is still a constant that runs LOW, which is the direction
+                        -- that pins a box that does not fit; the 0.19pt is kept for the same
+                        -- reason title_line's 1.65pt was.
   note_line   = 11.00,  -- one line of footnote text
   note_chars  = 40,
 
@@ -236,6 +246,40 @@ local function wrapped(s, per_line)
   local n = charcount(s)
   if n <= 0 then return 1 end
   return math.ceil(n / per_line)
+end
+
+-- How many RENDERED lines one SOURCE line of minted code occupies.
+--
+-- NOT wrapped(). minted/fvextra's `breakautoindent` is on by default and `\setminted` in
+-- book-print.latex does not turn it off, so every CONTINUATION line is indented under the
+-- leading whitespace of the source line it came from. A continuation therefore holds
+-- `per_line - indent` characters, not `per_line`:
+--
+--     a 96-character line indented 8 spaces sets in THREE lines, not two --
+--     48 on the first, then 48 characters of remainder into continuations of 48-8 = 40.
+--
+-- WHY THIS IS NOT A ROUNDING NICETY. wrapped() under-counted exactly that line, and
+-- under-counting is the dangerous direction: a low estimate pins a box, and a pinned box
+-- that does not fit HANGS xelatex (see THE CLIFF above). It was the largest estimator drift
+-- in the book -- the pre-flight measured a code callout at 383.82pt against its 371.50pt
+-- estimate, +12.32pt, which is one rendered code line (14.40pt) of precisely this shape.
+--
+-- Correcting it makes code estimates RISE, so FEWER boxes qualify to be pinned at the same
+-- budget. That is the right direction and it is not free: see the round-8 task-10 report.
+local function wrapped_code(s, per_line)
+  local n = charcount(s)
+  if n <= 0 then return 1 end
+  if n <= per_line then return 1 end
+  -- Leading whitespace in COLUMNS. A tab counts as fvextra's tabsize rather than as one
+  -- character, because the estimate has to describe the rendered line and not the source
+  -- byte count; counting it as one would understate the indent, which understates the
+  -- height, which is the unsafe direction.
+  local ws = s:match('^[ \t]*') or ''
+  local indent = charcount(ws) + (FIT.code_tab - 1) * select(2, ws:gsub('\t', ''))
+  -- An indent as wide as the measure would leave a continuation no room at all. Clamp so
+  -- the arithmetic stays finite; nothing in this book comes within 30 columns of it.
+  local continuation = math.max(1, per_line - indent)
+  return 1 + math.ceil((n - per_line) / continuation)
 end
 
 -- Walk a block for inlines that change the measurement:
@@ -357,7 +401,7 @@ local function estimate_block(blk)
     -- minted-filter has already turned code blocks into RawBlocks, handled below.
     local h = FIT.code_pad
     for line in (blk.text .. '\n'):gmatch('(.-)\n') do
-      h = h + FIT.code_line * wrapped(line, FIT.code_chars)
+      h = h + FIT.code_line * wrapped_code(line, FIT.code_chars)
     end
     return h
 
@@ -367,7 +411,7 @@ local function estimate_block(blk)
     if body then
       local h = FIT.code_pad
       for line in (body .. '\n'):gmatch('(.-)\n') do
-        h = h + FIT.code_line * wrapped(line, FIT.code_chars)
+        h = h + FIT.code_line * wrapped_code(line, FIT.code_chars)
       end
       return h
     end

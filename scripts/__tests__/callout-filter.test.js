@@ -387,9 +387,56 @@ maybe('callout filter: the FIT constants agree with the committed probe', () => 
     for (const [name, want] of Object.entries({
       text_block: 542.03, text_line: 16.32, code_line: 14.40, code_pad: 6.30,
       note_line: 11.00, em: 11.00, box: 34.00, title_line: 19.65,
+      // CORRECTED FROM 10.00 on 2026-11-02. The probe has recorded 10.19 all along and the
+      // filter rounded it down, which is a constant running LOW -- the direction that pins a
+      // box that does not fit. 0.19pt once per footnoted box moved nothing in this book, and
+      // "it is only a fifth of a point" is not a reason for the table and the probe to
+      // disagree.
+      note_base: 10.19,
     })) {
       expect(fit(name)).toBeCloseTo(want, 2);
     }
+  });
+
+  // THE CONTINUATION-LINE INDENT. minted/fvextra's `breakautoindent` is on by default and
+  // `\setminted` in book-print.latex does not turn it off, so a wrapped code line's
+  // continuations are indented under the ORIGINAL line's leading whitespace and hold fewer
+  // than code_chars characters. Estimating them at the full measure under-counted, and
+  // under-counting is what pins a box that does not fit.
+  //
+  // This was the largest estimator drift in the book: the pre-flight measured a code callout
+  // at 383.82pt against its 371.50pt estimate, +12.32pt, which is one rendered code line of
+  // exactly this shape. Like title_line, the term is a line of Lua that a refactor could drop
+  // in silence -- nothing in the rendered book would change until a box near the budget was
+  // pinned that should not have been.
+  test('an indented code line that wraps costs the extra rendered line', () => {
+    const est = (line) => {
+      const tex = pandocToLatex(`::: code\n\n\`\`\`java\n${line}\n\`\`\`\n\n:::\n`);
+      return Number(/%%CALLOUTFIT .* est=([\d.]+)/.exec(tex)[1]);
+    };
+    const chars = fit('code_chars');   // 48: what the FIRST rendered line holds
+    const indent = 8;
+    const width = 96;                  // two full measures: 2 lines flat, 3 lines indented
+    const flat = 'x'.repeat(width);
+    const nested = ' '.repeat(indent) + 'x'.repeat(width - indent);
+    // The fixture has to exercise the term: same character count, different wrap.
+    expect(flat.length).toBe(nested.length);
+    expect(Math.ceil(width / chars)).toBe(2);
+    expect(1 + Math.ceil((width - chars) / (chars - indent))).toBe(3);
+    // ...so the indented line costs exactly one more rendered line than the flat one.
+    expect(est(nested) - est(flat)).toBeCloseTo(fit('code_line'), 2);
+  });
+
+  // The other half of the same property: an indent must not be charged to a line that never
+  // wraps. Over-estimating is the safe direction but it still unpins boxes, and the fix is
+  // meant to cost the book nothing it does not have to.
+  test('an indented code line that FITS the measure still costs one rendered line', () => {
+    const est = (line) => {
+      const tex = pandocToLatex(`::: code\n\n\`\`\`java\n${line}\n\`\`\`\n\n:::\n`);
+      return Number(/%%CALLOUTFIT .* est=([\d.]+)/.exec(tex)[1]);
+    };
+    const chars = fit('code_chars');
+    expect(est(' '.repeat(16) + 'x'.repeat(chars - 16))).toBeCloseTo(est('x'.repeat(chars)), 2);
   });
 
   // The estimator must actually SPEND title_line on each line a boxed title wraps to. The

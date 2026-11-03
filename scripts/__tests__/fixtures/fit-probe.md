@@ -67,21 +67,26 @@ single one. The values below were measured on 2026-11-02 at the 6x9 trim with
                              box + code_pad + N x code_line >= the real code box, and
                              40.30 + 14.40 = 54.70 against a measured 54.37 does.
     FIT.code_line   14.40  = (code-21line - code-1line) / 20 = 14.39995.
-    FIT.note_base   10.00  } note-longurl  - note-absent = 32.19 = base + 2 x line (the URL
+    FIT.note_base   10.19  } note-longurl  - note-absent = 32.19 = base + 2 x line (the URL
     FIT.note_line   11.00  } wraps to two lines), and note-shorturl - note-absent = 21.19
-                             = base + 1 x line. 10 + 11 and 10 + 22 bracket both.
+                             = base + 1 x line. note_line is exactly 11.00, so the whole
+                             0.19 is note_base. CORRECTED FROM 10.00 on 2026-11-02.
     FIT.em          11.00  = em measures 10.95 (Atkinson Hyperlegible at 11pt); FIT rounds up.
     FIT.text_chars    50   = the wrap-text ladder still sets 58 characters as one line and
                              wraps by 66. 50 is held BELOW that.
     FIT.code_chars    48   = the wrap-code ladder still sets 56 as one line and wraps by 64.
                              48 is held below that, because breaklines breaks at the last
                              break point BEFORE the measure and indents the continuation.
+                             THIS IS THE FIRST RENDERED LINE ONLY: breakautoindent gives a
+                             continuation 48 - indent. See the third note below.
 
     FIT.title_line  19.65  = (title-83 - title-11) - text_line. CORRECTED FROM 18.00 on
                              2026-11-02; see the note below for why it needs that subtraction
                              and why it is the LARGER of two unequal steps.
-    FIT.note_base   10.00  = measures 10.19, so FIT is 0.19pt LOW. Recorded, not changed;
-                             see the second note below.
+    FIT.note_base   10.19  = measures 10.19. FIT held 10.00 -- 0.19pt LOW -- until
+                             2026-11-02; see the second note below.
+    FIT.code_tab       8   = fvextra's tabsize default, which \setminted does not override.
+                             Only reached by a tab-indented source; this book has none.
 
 TITLE_LINE NEEDS A SUBTRACTION, AND IT IS NOT LINEAR.
 Only a promptref has a variable boxed title, and a promptref also repeats its title in the
@@ -108,14 +113,41 @@ It held 18.00 until 2026-11-02, which was 1.65pt low per wrapped title line. Tha
 rather than patched at the time because correcting it re-decides promptref boxes and moves the
 pin count, which is a typeset change rather than a bug fix.
 
-NOTE_BASE IS 0.19pt LOW, AND IS LEFT THAT WAY ON PURPOSE.
-    note-shorturl - note-absent = 21.19  against FIT's base + 1 x line = 21.00
-    note-longurl  - note-absent = 32.19  against FIT's base + 2 x line = 32.00
+NOTE_BASE WAS 0.19pt LOW AND IS NOW CORRECTED TO 10.19 (2026-11-02).
+    note-shorturl - note-absent = 21.19  against the old base + 1 x line = 21.00
+    note-longurl  - note-absent = 32.19  against the old base + 2 x line = 32.00
 `note_line` is exactly 11.00 (the two differences differ by exactly 11.00), so the whole 0.19
-sits in `note_base`, which really measures 10.19. It is LOW, which is the unsafe direction,
-but it is 0.19pt ONCE PER BOX and `FIT.box` is deliberately 2.29pt HIGH, so no box carrying a
-footnote is under-estimated on balance. Changing it would re-decide boxes for a fifth of a
-point. Recorded here instead; raise it if `box` is ever tightened.
+sat in `note_base`, which really measures 10.19.
+
+It was held at 10.00 for a round on the argument that 0.19pt once per box is covered by a
+`FIT.box` that is deliberately 2.29pt HIGH. That is true and it is beside the point: a
+constant that runs LOW is the direction that pins a box which does not fit, and a probe that
+disagrees with the table it feeds is how `title_line` stayed 1.65pt low for a whole round.
+
+CORRECTING IT MOVED NOTHING. It raises 65 promptref estimates by 0.19pt each, the largest to
+388.40pt against a 433.6pt budget; no box changed pin status and the rendered book is
+unchanged (267 pages, 123 pinned, before and after). The only box anywhere near the line is
+the "Leverage AI Assistance" promptref at 433.84pt -- 0.24pt OVER the budget, and breakable
+because of it. The correction pushed it 0.19pt FURTHER from being pinned.
+
+A CONTINUATION LINE OF CODE IS NARROWER THAN THE FIRST, AND THE ESTIMATE NOW SAYS SO.
+minted's `breakautoindent` is on by default and `\setminted` in book-print.latex does not turn
+it off, so every continuation of a wrapped code line is indented under the leading whitespace
+of the source line it came from. A continuation therefore holds `code_chars - indent`
+characters:
+
+    a 96-character line indented 8 spaces sets in THREE rendered lines, not two --
+    48 on the first, then 48 characters of remainder into continuations of 48 - 8 = 40.
+
+`wrapped()` charged every line the full measure and under-counted exactly that. It was the
+largest estimator drift in the book: the pre-flight measured a code callout at 383.82pt
+against its 371.50pt estimate, +12.32pt, which is one code_line (14.40pt) of this shape.
+`wrapped_code()` in the filter does the arithmetic; that box now estimates 385.90 and drifts
+-2.08pt, and the book's worst drift is +1.69pt, inside the pre-flight's 2pt tolerance.
+
+It changed ONE estimate in the whole book and no box's pin status. That is luck rather than
+design: correcting the model makes code estimates RISE, which means fewer boxes qualify at the
+same budget, so re-measure the page count whenever these constants move upwards.
 
 A number that disagrees with `FIT` in the LOW direction is the one to act on: the estimate may
 run high (a box stays breakable: a few more split boxes) but never low (a box is pinned that

@@ -309,11 +309,29 @@ LARGER step and applies it to every line over the first: that over-estimates a 3
 6.6pt (safe, a box stays breakable), where holding 13.03 would under-estimate every 2-line
 title by the same (not safe). No title in this book reaches three lines.
 
-**`note_base` is 0.19pt LOW, and is left that way deliberately.** `note-longurl - note-absent`
-measures 32.19 against `FIT`'s 10 + 2×11 = 32.00, and `note_line` is exactly 11.00, so the
-whole 0.19 sits in `note_base`. It is the unsafe direction, but it is 0.19pt once per box
-against a `FIT.box` that is deliberately 2.29pt HIGH, so no footnote-bearing box is
-under-estimated on balance. Recorded in `fit-probe.md`; raise it if `box` is ever tightened.
+**`note_base` was 0.19pt LOW and is now corrected to 10.19 (2026-11-02).**
+`note-longurl - note-absent` measures 32.19 against the old 10 + 2×11 = 32.00, and `note_line`
+is exactly 11.00, so the whole 0.19 sat in `note_base`. It was left at 10.00 for a round on the
+argument that 0.19pt once per box is covered by a `FIT.box` that runs 2.29pt HIGH. That is true
+and it is not the point: a constant that runs LOW is the direction that pins a box which does
+not fit, and a table that disagrees with its own probe is how `title_line` stayed 1.65pt low
+for a whole round. **It moved nothing** — it raises 65 promptref estimates by 0.19pt each, the
+largest of them to 388.40pt against a 433.6pt budget, so no box changed pin status and the
+rendered book is unchanged. The nearest thing to a margin is the "Leverage AI Assistance"
+promptref at **433.84pt, 0.24pt OVER the budget and breakable because of it**: the correction
+pushed it 0.19pt further from being pinned, which is the direction to be wrong in.
+
+**`code_chars` describes only the FIRST rendered line of a code line (2026-11-02).** minted's
+`breakautoindent` is on by default and `\setminted` does not turn it off, so a wrapped code
+line's continuations are indented under the ORIGINAL line's leading whitespace and hold
+`code_chars - indent` characters, not `code_chars`. `wrapped_code()` in the filter does that
+arithmetic; `wrapped()` (which did not) under-counted a 96-character line indented 8 spaces as
+2 rendered lines where minted sets 3. That one line was the largest estimator drift in the
+book — the pre-flight measured a code callout at **383.82pt against a 371.50pt estimate,
++12.32pt**, one `code_line`. Corrected, that box estimates 385.90 and drifts **−2.08pt**, and
+the book's worst drift falls to **+1.69pt**, inside the pre-flight's 2pt tolerance. It changed
+exactly one estimate and **no box's pin status**: 123 pinned before and after, 267 pages
+either way.
 
 **THE CLIFF HAS NO COMMITTED PROBE, DELIBERATELY.** A probe that reproduces it does not
 terminate, and a committed one would eventually be run by somebody who had not read why. The
@@ -336,9 +354,9 @@ exists, or every code box measures as empty):
 | `text_line` | 16.32 | info box 2 paragraphs (66.32) less 1 paragraph (50.00); linear to 11 paragraphs (213.20) |
 | `text_chars` | 50 | 58 characters still set as one line, 60 wrapped; held back for justification and bold/italic runs |
 | `code_line` | 14.40 | code box 21 minted lines (342.37) less 1 line (54.37), over 20 |
-| `code_chars` | 48 | the geometric measure takes 56 (56 chars fit, 58 overfull by 6.1pt), but breaklines breaks at the last break point BEFORE the measure and indents the continuation under the hook symbol: the book's own 62-char line broke after 49 |
+| `code_chars` | 48 | the geometric measure takes 56 (56 chars fit, 58 overfull by 6.1pt), but breaklines breaks at the last break point BEFORE the measure and indents the continuation under the hook symbol: the book's own 62-char line broke after 49. **The FIRST rendered line only** — `breakautoindent` gives a continuation `48 - indent` (see above) |
 | `code_pad` | 6.30 | code box overhead (39.97) less text box overhead (34.00) |
-| `note_base`, `note_line`, `note_chars` | 10.00, 11.00, 40 | promptref box with a long-URL footnote (101.28) less the same without one (69.28) = 32pt = rule+skip plus 2 lines; a short URL costs 21pt = rule+skip plus 1 line |
+| `note_base`, `note_line`, `note_chars` | 10.19, 11.00, 40 | promptref box with a long-URL footnote (101.28) less the same without one (69.28) = 32pt = rule+skip plus 2 lines; a short URL costs 21pt = rule+skip plus 1 line |
 | `em` | 11.00 | the body font size, for the promptref box's `\vspace{0.3em}` and `\vspace{0.5em}` |
 
 **PINNING IS OPT-IN, AND THE TEMPLATE IS WHAT OPTS IN.** Every constant in the table above
