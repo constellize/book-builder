@@ -381,10 +381,10 @@ $endif$
 \brokenpenalty=10000
 
 % ---------------------------------------------------------------------------------------
-% VERTICAL JUSTIFICATION: \flushbottom, the class's own default. Round 8's second pass
-% reverted the \raggedbottom below; everything from here to the measurement is the reasoning
-% that put \raggedbottom in, kept because it is still true and still the argument against
-% this line. Read it, then read WHY IT WENT BACK at the end.
+% VERTICAL JUSTIFICATION: \raggedbottom, overriding the class default. Settled in round 8's
+% third pass on a corrected measurement; the reversal recorded in the second pass was taken
+% on a metric that could not see the defect it was judging. Read THE PROBLEM, then READ THE
+% METRIC FIRST at the end before touching this line.
 %
 % `book` with `twoside` leaves \flushbottom in force (book.cls only calls \raggedbottom for
 % oneside), so every page is stretched to the full text block and the slack is pushed into
@@ -407,24 +407,38 @@ $endif$
 % normally set flush bottom; it was ragged bottom here because the pinned boxes make flush
 % bottom lie about where the white space is.
 %
-% WHY IT WENT BACK (round 8, second pass). \raggedbottom does not remove slack from the book;
-% it RELOCATES it, out of inter-paragraph glue and into one visible block at the page foot.
-% That is exactly what made the owner read the build as "a lot more pages that are mostly
-% empty" -- the same whitespace round 7 had, now gathered where a reader sees it. Measured as
-% the vertical extent the text occupies per page, against round 7 (257pp, 78.8%, 139 pages at
-% 90%+ fill), with pinning already cut to the tail rule:
+% IT WENT BACK TO \flushbottom ONCE, IN ROUND 8's SECOND PASS, AND THAT WAS A MISTAKE. The
+% argument was that \raggedbottom does not remove slack, it RELOCATES it out of
+% inter-paragraph glue into one visible block at the page foot, and so reads as "a lot more
+% pages that are mostly empty". The relocation claim is true. The conclusion drawn from it
+% was not, because of the metric it was measured with:
 %
 %   \raggedbottom   269pp   72.5% mean fill    95 pages at 90%+
 %   \flushbottom    269pp   74.9% mean fill   116 pages at 90%+
 %
-% So this line is honest about one thing and must not be oversold: flush bottom does NOT make
-% the book less gappy, it hides the gaps better, and the paragraph above is the price -- the
-% 84 (now 104) `Underfull \vbox` entries come straight back, and the white between a lead-in
-% and its pinned box returns with them. What makes this acceptable is the OTHER half of the
-% same pass: with heading reservations off (see \headingReserve below) there is far less glue
-% on the page for flush bottom to stretch, so it reaches the bottom margin by pulling much
-% less. The two changes were measured together and belong together; reverting one alone
-% reopens the mid-page gaps this comment was originally written about.
+% READ THE METRIC FIRST. Those numbers are "mean fill" = the vertical EXTENT the text
+% occupies between first and last baseline. That measure REWARDS STRETCHING: a page holding
+% three lines of text, a 300pt hole and a figure scores 96%, because the extent runs the
+% whole block. It scores a pulled-apart page as full, which is precisely the defect
+% \flushbottom creates and precisely what the book's owner was objecting to. The metric was
+% structurally incapable of seeing the thing it was being used to judge, so the second pass
+% optimised for the wrong direction.
+%
+% MEASURED AGAIN AS HOLES, not extent -- summing every inter-line gap beyond normal leading,
+% which is what a reader actually perceives (scripts in the round-8 scratchpad; the approach
+% is the one that matters, not the file). Same book, same 260 pages, same fault classes:
+%
+%                   holes          pages with a >60pt hole   Underfull \vbox
+%   \flushbottom    41.8 pages'      95                       85
+%   \raggedbottom   35.6 pages'      75                        0
+%
+% Page count identical, so the ragged setting costs NOTHING in length. It fixed p.105
+% (72->32pt hole), p.145 (190->30pt) and most of p.218 (479->255pt). The 85 `Underfull \vbox`
+% entries are not cosmetic log noise: each one is a page pulled apart to reach the bottom
+% margin, which is the mid-page white between a lead-in and its pinned box described above.
+%
+% So: do not revert this line on a fill or extent measurement. If it is ever revisited,
+% measure holes.
 %
 % Placed BEFORE the header-includes block on purpose: book-builder is shared, and a consuming
 % book that wants ragged bottom can say `\raggedbottom` in its own header-includes and win.
@@ -435,7 +449,7 @@ $endif$
 % document. Doing it here produced `You can't use \spacefactor in vertical mode` from the
 % subcaption guard and a build with no pages. The copyright-page comment further down says
 % the same thing; believe it.)
-\flushbottom
+\raggedbottom
 
 \usepackage{titlesec}
 \usepackage{fancyhdr}

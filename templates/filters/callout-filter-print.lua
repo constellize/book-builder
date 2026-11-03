@@ -1145,12 +1145,41 @@ end
 -- can never reserve less than before and never makes an existing break worse.
 local RESERVED_NINE_PT = FIT.text_line * 9
 
+-- THE RESERVATION USES A DE-BIASED ESTIMATE. THE FIT DECISION DOES NOT. The two want safety
+-- in OPPOSITE directions, so they must not share a number:
+--
+--   * calloutFitsOnePage() asks "can this box fit a page at all?". Under-estimating there
+--     pins a box that does not fit, which HANGS xelatex (see THE CLIFF above). It keeps the
+--     raw estimate and stays deliberately high.
+--   * This reservation asks "how much space must I hold open?". Over-reserving here does not
+--     hang anything -- it breaks the page early and leaves the difference as blank paper.
+--
+-- scripts/check-pinned-callouts.js measures every pinned box's REAL height and reports it
+-- against the estimate. Over the nine boxes this book pins, measured/estimate is:
+--
+--     promptref  n=6   0.822 .. 0.877   (mean 0.848)
+--     code       n=3   0.880 .. 0.997   (mean 0.957)
+--
+-- promptref drifts high and tightly: the estimator pads title wrapping and the note block,
+-- neither of which costs what it budgets. 0.90 sits above the worst observed promptref ratio
+-- (0.877) with 2.6% to spare, so the reservation still cannot land UNDER the box -- which is
+-- the one failure that matters here, because a short reservation places the lead-in and then
+-- lets the box move out from under it, recreating the class-4 fault this code exists to
+-- prevent. Code boxes estimate almost exactly (0.997 worst case) and get no discount.
+--
+-- Worth 42.5pt on "Revise Memory Bank" alone -- three blank lines at the foot of p.140.
+-- Re-run check-pinned-callouts.js after changing the FIT constants: if a ratio ever exceeds
+-- the factor below, this reservation has become a source of stranded lead-ins.
+local RESERVE_FACTOR = { promptref = 0.90 }
+
 local function pinned_estimate(blk)
   if not (blk and blk.t == 'RawBlock'
           and (blk.format == 'latex' or blk.format == 'tex')) then return nil end
   local prov = blk.text:match('%%%%CALLOUTFIT[^\n]*')
   if not prov or not prov:match('pinned=1') then return nil end
-  return tonumber(prov:match('est=([%d%.]+)'))
+  local est = tonumber(prov:match('est=([%d%.]+)'))
+  if not est then return nil end
+  return est * (RESERVE_FACTOR[prov:match('type=(%a+)')] or 1.0)
 end
 
 local function is_reservation(blk)
