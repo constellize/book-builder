@@ -36,6 +36,15 @@ number-sections: true
 filters:
   - pandoc-crossref
   - book-builder/templates/filters/minted-filter.lua
+  # BEFORE the callout filter, deliberately, for the same reason as the print chain: that
+  # filter turns a callout Div into a LaTeX RawBlock, and once it has, the lead-ins INSIDE
+  # the callout are no longer reachable as blocks. Running first means callouts are still
+  # Divs, so their contents are walked too.
+  #
+  # Added in v0.6.4. The digital build had none of this and was carrying five stranded
+  # lead-ins that the print build had already fixed -- "This distinction matters because:"
+  # at the foot of p.23, "Setting up your constellation map:" on p.60, and three more.
+  - book-builder/templates/filters/keep-leadin-with-content.lua
   - book-builder/templates/filters/callout-filter-digital.lua
   - book-builder/templates/filters/link-filter.lua
   - citeproc
@@ -43,6 +52,14 @@ filters:
 # Metadata
 metadata-files:
   - book-builder/templates/metadata.yaml
+
+metadata:
+  # The digital measure, for keep-leadin-with-content.lua. Letter with 1in margins runs far
+  # longer lines than the 6x9 print page: measured on the built PDFs, median 89 and p90 96
+  # characters against print's 66 and 72. The filter defaults to print's 70, so without this
+  # every one-line lead-in here would be counted as two and over-reserve a baseline. See the
+  # note at BODY_CHARS in that filter.
+  leadin-body-chars: 90
 
 
 # Variables for template

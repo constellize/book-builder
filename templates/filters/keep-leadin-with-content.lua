@@ -52,7 +52,30 @@ end
 -- the callout reservation in callout-filter-print.lua. There, over-reserving costs blank
 -- paper and nothing else. Here, UNDER-reserving strands a lead-in, which is a fault the
 -- publisher has named in two consecutive rounds. A line of whitespace is cheaper than that.
+--
+-- IT IS A PER-TARGET FIGURE, because it describes a measure, not the book. 70 is the 6x9
+-- print measure. The digital PDF is Letter with 1in margins, a measure half an inch wider
+-- than three-quarters of print's, and its body lines run much longer -- measured on the
+-- built PDFs, median 66 and p90 72 characters for print against median 89 and p90 96 for
+-- digital. Reading 70 on the digital build would call every one-line lead-in a two-liner
+-- and over-reserve a baseline on all of them; harmless in direction, but it reserves
+-- whitespace nobody asked for on a format where lead-ins mostly are one line.
+--
+-- So each target sets its own through the `leadin-body-chars` metadata key, and the default
+-- stays at print's 70 so that an existing pipeline is unaffected by this becoming a knob.
 local BODY_CHARS = 70
+
+local function readBodyChars(meta)
+  local v = meta['leadin-body-chars']
+  if not v then return end
+  local ok, text = pcall(pandoc.utils.stringify, v)
+  if not ok then return end
+  local n = tonumber(text)
+  -- A measure under 20 characters is not a measure, it is a typo or a unit mix-up, and
+  -- taking it would multiply every reservation by three or four and wreck the build. 400 is
+  -- past any plausible page. Out of range means keep the default rather than fail the build.
+  if n and n >= 20 and n <= 400 then BODY_CHARS = math.floor(n) end
+end
 
 local function leadin_lines(blk)
   local ok, text = pcall(pandoc.utils.stringify, blk)
@@ -337,3 +360,15 @@ function Blocks(blocks)
   end
   return out
 end
+
+-- A LIST of filter sets, run in sequence over the whole document, which is the only way the
+-- Blocks handler can see document metadata: a single set has no ordering guarantee between
+-- Meta and Blocks, and leadin_lines() needs BODY_CHARS settled before the first reservation
+-- is sized. Same shape, and the same reason, as callout-filter-print.lua's return.
+--
+-- Blocks stays a global function so that a pipeline loading this file for its side effects
+-- still finds it.
+return {
+  { Meta = function(meta) readBodyChars(meta); return meta end },
+  { Blocks = Blocks }
+}

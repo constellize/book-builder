@@ -55,6 +55,28 @@
 \newunicodechar{✔}{\checkmark}
 \newunicodechar{✅}{\checkmark}
 
+% ARROWS AND BALLOT MARKS. These six were in book-print.latex and not here, which is the
+% whole of the digital PDF's fault class 5: eighteen replacement characters across eleven
+% pages of v0.6.4, every one of them an arrow in a place that reads as an arrow --
+% "break down ? capture ? evaluate", "Immediate Cause ? Contributing Factors", "91%?82%".
+%
+% The main font has no arrow. Verified: AtkinsonHyperlegibleNext-Regular.ttf does not map
+% U+2192. \symbolfont is Menlo, already loaded above for the box-drawing characters, and
+% Menlo does map it.
+%
+% U+274C is an emoji; neither the text font nor Menlo maps it. U+2717 BALLOT X reads
+% identically in body text and Menlo does map it, so it stands in -- the counterpart of
+% the checkmark mapping above, and the two appear as a pair in the manuscript.
+%
+% Keep this list in sync with book-print.latex. A glyph the manuscript uses and only one
+% template maps is invisible in the other, and shows up as a box rather than an error.
+\newunicodechar{→}{\symbolfont →}
+\newunicodechar{❌}{\symbolfont ✗}
+\newunicodechar{✗}{\symbolfont ✗}
+\newunicodechar{←}{\symbolfont ←}
+\newunicodechar{↔}{\symbolfont ↔}
+\newunicodechar{⇒}{\symbolfont ⇒}
+
 % Define tree drawing characters
 \newunicodechar{├}{\symbolfont ├}
 \newunicodechar{─}{\symbolfont ─}
@@ -88,6 +110,56 @@
    \renewcommand{\item}[1][]{\olditem}}
   {\end{list}}
 
+% ---------------------------------------------------------------------------------------
+% PAGE-BREAKING PENALTIES. Ported from book-print.latex, where they were added for the
+% publisher's review; this template never got them, and until v0.6.4 the digital PDF was
+% carrying faults the print PDF had already fixed.
+%
+% \brokenpenalty is the one that does the work here. It governs a word hyphenated across a
+% PAGE, and at LaTeX's default of 150 TeX will happily do it: eleven cases in v0.6.4,
+% "simultane-/ously" across pp.23-24, "Onboard-/ing" across pp.26-27, and two spanning a
+% full-page figure. At 10000 it will not do it at all.
+%
+% \widowpenalty and \clubpenalty govern a break INSIDE a paragraph, one line from either
+% end. They are not what holds a lead-in to its list -- that break is between two
+% paragraphs, and keep-leadin-with-content.lua handles it -- but they are what lets a
+% folded-in bold label be held by the paragraph it now belongs to.
+\widowpenalty=10000
+\clubpenalty=10000
+\displaywidowpenalty=10000
+\brokenpenalty=10000
+
+% VERTICAL JUSTIFICATION. \raggedbottom, overriding the book class default of \flushbottom,
+% for the same reason print carries it: \brokenpenalty=10000 above takes away TeX's option
+% of hyphenating across a page, so it has to find the break elsewhere, and under
+% \flushbottom the slack that leaves is distributed as stretch BETWEEN the blocks on the
+% page. That is what a reader sees as a hole in the middle of a page. \raggedbottom puts
+% the same slack at the page foot instead, where on screen it reads as a margin.
+%
+% It does not remove whitespace, it relocates it, and that is the whole of the claim.
+\raggedbottom
+
+% \needspaceNow: the EAGER \needspace that keep-leadin-with-content.lua reaches for in
+% front of a longtable. The filter guards every use with \ifdefined and falls back to the
+% lazy \needspace, so a template without this still builds -- it just reintroduces the
+% ghost table head that the lazy form causes, because longtable replaces \output and reads
+% any foreign page break as a table break, copying the head above the lead-in.
+%
+% This decides NOW, while the default \output is still active: if fewer than #1 remain on
+% the page it breaks at once, otherwise it emits nothing, so no pending penalty is left for
+% longtable to misread. See the long note at the same macro in book-print.latex.
+%
+\usepackage{needspace}  % used by keep-leadin-with-content.lua
+\makeatletter
+\newcommand{\needspaceNow}[1]{%
+  \par
+  \ifdim\pagegoal<\maxdimen % \pagegoal is \maxdimen on an empty page: nothing to protect
+    \ifdim\dimexpr\pagegoal-\pagetotal\relax<#1\relax
+      \vfil\penalty-\@M
+    \fi
+  \fi}
+\makeatother
+
 % Page layout - simple approach without geometry package
 \usepackage[letterpaper,margin=1in,bindingoffset=0.2in]{geometry}
 
@@ -120,6 +192,37 @@ $endif$
 \makeatother
 
 % Graphics and figures
+% ---------------------------------------------------------------------------------------
+% NO FLOAT CONTROL HERE, AND IT WAS MEASURED. Print's block -- \usepackage{float},
+% \floatplacement{figure}{!ht}, \usepackage[section]{placeins} and the four fractions --
+% was ported here in full and reverted.
+%
+% What prompted it: "Key components:" sat at the foot of p.106 of v0.6.4 while Figure 5.1
+% and the numbered list it introduces both went to p.107. The markdown has the lead-in
+% followed DIRECTLY by its list, so the figure was a deferred float that LaTeX flushed at
+% the page break and dropped in between. No reservation can prevent that -- the reservation
+% was satisfied; the float arrived afterwards.
+%
+% Measured on the whole book, against the build with the penalties above and nothing else:
+%
+%   penalties only            201pp   31.0 pages' worth of holes   83.6pt mean   3 faults
+%   + print's float block     199pp   40.8 pages' worth of holes  111.2pt mean   5 faults
+%
+% Two pages shorter and far worse everywhere that matters: ten more pages' worth of
+% whitespace, a third more pages carrying a visible hole, a new orphaned "}" on p.90, and
+% one MORE stranded lead-in rather than fewer. It did not even fix the strand it was added
+% for -- "Key components:" simply moved to p.102 and stayed at the foot.
+%
+% Why it helps print and not here: [section] makes placeins issue a \FloatBarrier at every
+% \section, and a barrier flushes held floats whether or not the page has room, which is
+% what opens the holes. Print accepts that cost because it buys the publisher's fault class
+% 1 -- a figure drifting into a breakable callout and tearing its footnote URL in half.
+% The digital build does not have that fault: class 1 is already 0 here, because these
+% callouts are never pinned and its figures are sized for a wider, taller text block.
+%
+% So the trade is real in one template and all cost in the other. Leaving \FloatBarrier
+% undefined also keeps the barriers keep-leadin-with-content.lua emits under \ifdefined as
+% no-ops here, which is a supported configuration of that filter.
 \usepackage{graphicx}
 \makeatletter
 \def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
