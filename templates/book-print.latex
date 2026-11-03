@@ -381,7 +381,10 @@ $endif$
 \brokenpenalty=10000
 
 % ---------------------------------------------------------------------------------------
-% VERTICAL JUSTIFICATION: \raggedbottom, not the class's \flushbottom.
+% VERTICAL JUSTIFICATION: \flushbottom, the class's own default. Round 8's second pass
+% reverted the \raggedbottom below; everything from here to the measurement is the reasoning
+% that put \raggedbottom in, kept because it is still true and still the argument against
+% this line. Read it, then read WHY IT WENT BACK at the end.
 %
 % `book` with `twoside` leaves \flushbottom in force (book.cls only calls \raggedbottom for
 % oneside), so every page is stretched to the full text block and the slack is pushed into
@@ -399,13 +402,32 @@ $endif$
 % 267-page book: page count unchanged, `Underfull \vbox` 84 -> 0, `Overfull \vbox` 0 -> 0,
 % and no change to the detected fault classes.
 %
-% IT IS A HOUSE-STYLE DECISION, taken by the book's owner for this book: six body-text pages
+% IT WAS A HOUSE-STYLE DECISION, taken by the book's owner for this book: six body-text pages
 % were filling to 15-40% because the slack was going into mid-page gaps. A trade book is
-% normally set flush bottom; it is ragged bottom here because the pinned boxes make flush
+% normally set flush bottom; it was ragged bottom here because the pinned boxes make flush
 % bottom lie about where the white space is.
 %
+% WHY IT WENT BACK (round 8, second pass). \raggedbottom does not remove slack from the book;
+% it RELOCATES it, out of inter-paragraph glue and into one visible block at the page foot.
+% That is exactly what made the owner read the build as "a lot more pages that are mostly
+% empty" -- the same whitespace round 7 had, now gathered where a reader sees it. Measured as
+% the vertical extent the text occupies per page, against round 7 (257pp, 78.8%, 139 pages at
+% 90%+ fill), with pinning already cut to the tail rule:
+%
+%   \raggedbottom   269pp   72.5% mean fill    95 pages at 90%+
+%   \flushbottom    269pp   74.9% mean fill   116 pages at 90%+
+%
+% So this line is honest about one thing and must not be oversold: flush bottom does NOT make
+% the book less gappy, it hides the gaps better, and the paragraph above is the price -- the
+% 84 (now 104) `Underfull \vbox` entries come straight back, and the white between a lead-in
+% and its pinned box returns with them. What makes this acceptable is the OTHER half of the
+% same pass: with heading reservations off (see \headingReserve below) there is far less glue
+% on the page for flush bottom to stretch, so it reaches the bottom margin by pulling much
+% less. The two changes were measured together and belong together; reverting one alone
+% reopens the mid-page gaps this comment was originally written about.
+%
 % Placed BEFORE the header-includes block on purpose: book-builder is shared, and a consuming
-% book that wants flush bottom back can say `\flushbottom` in its own header-includes and win.
+% book that wants ragged bottom can say `\raggedbottom` in its own header-includes and win.
 %
 % (That block is NOT named here with its pandoc variable syntax, deliberately. pandoc expands
 % template variables BEFORE LaTeX sees the percent signs, so writing one inside a comment
@@ -413,7 +435,7 @@ $endif$
 % document. Doing it here produced `You can't use \spacefactor in vertical mode` from the
 % subcaption guard and a build with no pages. The copyright-page comment further down says
 % the same thing; believe it.)
-\raggedbottom
+\flushbottom
 
 \usepackage{titlesec}
 \usepackage{fancyhdr}
@@ -494,10 +516,41 @@ $endif$
 % before a chapter opener) and 8 end short because the next page opens with a pinned callout
 % that would not fit. The heading reservation is not what makes this book's pages short, so
 % changing how it decides cannot be what fixes them.
+% ROUND 8, SECOND PASS: THE RESERVATIONS ARE OFF. The three hooks expand to nothing.
+%
+% Everything above stands and was measured honestly, but it was all measured in BODY LINES
+% PER PAGE -- "pages under 20 lines", which removing reservations moved only 106 -> 104. That
+% metric is blind to the fault the book's owner was actually looking at. Measured instead as
+% the VERTICAL EXTENT the text occupies on each page, against the round-7 build the publisher
+% returned (257pp, 78.8% mean fill, 139 pages at 90%+ fill):
+%
+%   reservations on, 7/6/5    269pp   74.9% mean fill   116 pages at 90%+
+%   reservations off          267pp   77.3% mean fill   141 pages at 90%+
+%
+% Twenty-five pages move back into the well-filled band and the book loses two pages. A
+% reservation is stretch glue plus a penalty in front of EVERY heading; the lazy \needspace
+% leaves that glue behind wherever TeX declines the break, and across a book with this many
+% headings it is the single largest source of slack in the page.
+%
+% WHAT IT COSTS: the publisher's fault class 4 (lead-ins stranded at a page foot) goes 3 -> 7.
+% Two of those seven are detector false positives -- ordinary mid-paragraph lines, not
+% lead-ins -- and the rest are colon lead-ins in chapters the reservations were not protecting
+% in the first place; they arrive because the page reflowed, not because a guard was removed.
+% That is a real but weak cost against twenty-five pages, and the owner took the trade.
+%
+% A consuming book that wants reservations back says so in its own header-includes, which
+% pandoc inserts further down this preamble -- \renewcommand, because these are defined here:
+%
+%   \renewcommand{\sectionbreak}{\headingReserve{7\baselineskip}}
+%   \renewcommand{\subsectionbreak}{\headingReserve{6\baselineskip}}
+%   \renewcommand{\subsubsectionbreak}{\headingReserve{5\baselineskip}}
+%
+% \headingReserve stays defined so that route needs nothing else, and so the eager/lazy switch
+% documented above still works for a book that opts in.
 \providecommand{\headingReserve}{\needspace}
-\newcommand{\sectionbreak}{\headingReserve{7\baselineskip}}
-\newcommand{\subsectionbreak}{\headingReserve{6\baselineskip}}
-\newcommand{\subsubsectionbreak}{\headingReserve{5\baselineskip}}
+\newcommand{\sectionbreak}{}
+\newcommand{\subsectionbreak}{}
+\newcommand{\subsubsectionbreak}{}
 
 % Customize section titles
 \titleformat{\section}

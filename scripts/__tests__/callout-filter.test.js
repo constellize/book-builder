@@ -171,8 +171,11 @@ maybe('callout filter: float barriers', () => {
     // The %%CALLOUTFIT provenance comment rides in the SAME block, and that matters for the
     // same reason the barrier does: emitted as its own RawBlock it would be the block
     // keep-leadin-with-content.lua matched, and the callout would drop to five lines.
+    // pinned=0: a one-word `::: info` fits a page but has no strandable tail, so since round
+    // 8's second pass it is left breakable. What this test guards is the BLOCK STRUCTURE, not
+    // the pin decision -- the barrier and the provenance comment riding in the same block.
     expect(blocks[0]).toMatch(
-      /^RawBlock\|.*\\FloatBarrier.*%%CALLOUTFIT type=info pinned=1 .*\\begin\{tcolorbox\}/);
+      /^RawBlock\|.*\\FloatBarrier.*%%CALLOUTFIT type=info pinned=0 .*\\begin\{tcolorbox\}/);
   });
 });
 
@@ -181,7 +184,32 @@ maybe('callout filter: a callout that fits does not split', () => {
   afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
   test('a short code callout is not breakable', () => {
+    // codeCallout() emits JSON, so its last line is `}` -- a strandable tail, hence pinned.
     expect(pandocToLatex(codeCallout(16))).toMatch(/breakable=false/);
+  });
+
+  // Round 8, second pass. Pinning every box that merely FITS pinned 123 of the book's 157
+  // callouts and cost ten pages and 17.5 pages' worth of whitespace, because a pinned box
+  // that does not fit where it stands moves on and leaves its hole behind. Fit asks "may this
+  // be pinned", not "need it be". These two tests are the difference, and they are deliberately
+  // the same height so that only the tail can explain the different answer.
+  const SHELL_LINES = 16;
+  const shellCallout = () => '::: code\n\n```bash\n' +
+    Array.from({ length: SHELL_LINES },
+      (_, i) => `echo "step ${i} of the build completed"`).join('\n') +
+    '\n```\n\n:::\n';
+
+  test('a code callout that does NOT end in a closer stays breakable', () => {
+    const tex = pandocToLatex(shellCallout());
+    // It fits -- so the only thing leaving it breakable is the absence of a strandable tail.
+    // Asserting both together is what stops this passing because the box became unmeasurable.
+    expect(tex).toMatch(/%%CALLOUTFIT type=code pinned=0 est=\d+\.\d+ .*fits=1/);
+    expect(tex).not.toMatch(/breakable=false/);
+  });
+
+  test('the same box pinned once a closer is appended to it', () => {
+    const withTail = shellCallout().replace('\n```\n\n:::', '\n}\n```\n\n:::');
+    expect(pandocToLatex(withTail)).toMatch(/breakable=false/);
   });
 
   withManuscript("the book's own p80 JSON listing is pinned", () => {
@@ -251,10 +279,17 @@ maybe('callout filter: a callout that fits does not split', () => {
     expect(pandocToLatex(`::: info\n${inner}\n:::\n`)).not.toMatch(/breakable=false/);
   });
 
-  test('a short hard-broken callout is still pinned', () => {
+  test('a short hard-broken callout is still MEASURED', () => {
     // The fix must not make every hard break unmeasurable: four short lines still fit.
+    //
+    // Asserted on `fits=1`, not on breakable=false. This box has no strandable tail, so since
+    // round 8's second pass it is deliberately left breakable -- but the thing under test is
+    // the ESTIMATOR, which must still place the hard breaks and return a height. Asserting
+    // the pin decision here would silently stop testing that: an unmeasurable box also comes
+    // out breakable, so the old assertion would now pass for exactly the wrong reason.
     const hard = Array.from({ length: 4 }, (_, i) => `line number ${i} here  `).join('\n');
-    expect(pandocToLatex(`::: info\n${hard}\n:::\n`)).toMatch(/breakable=false/);
+    const tex = pandocToLatex(`::: info\n${hard}\n:::\n`);
+    expect(tex).toMatch(/%%CALLOUTFIT type=info pinned=0 est=\d+\.\d+ .*fits=1/);
   });
 
   test('a callout containing only an image is not pinned as zero-height', () => {

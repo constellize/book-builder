@@ -505,6 +505,69 @@ function calloutFitsOnePage(contentBlocks, extras)
   return h <= PIN_BUDGET, h
 end
 
+-- Does this callout END in a tail that would be stranded if the box split there?
+--
+-- WHY THIS EXISTS, and why it replaced "pin everything that fits" (round 8, second pass).
+--
+-- Pinning every box that happened to FIT a page pinned 123 of 157 callouts and cost the book
+-- ten pages and seventeen and a half pages' worth of whitespace -- a pinned box that does not
+-- fit where it stands moves to the next page and leaves its hole behind. Measured against the
+-- round-7 build, mean page fill went 78.8% -> 73.1% and pages at 90%+ fill went 139 -> 101.
+--
+-- Fit is the WRONG question. It asks "may this box be pinned", not "does this box need to
+-- be". A callout that splits mid-prose across a page turn costs nothing and the book did it
+-- happily for seven rounds. What was reported was narrower: a box splitting so that the page
+-- opens on a tail carrying no information -- p80's `] } } } }`, five structural closers alone
+-- at the head of a page, from the JSON sample in `ch3.md:60`.
+--
+-- So pin on the tail, not the fit. Six callouts in the book end in a closer run; those are
+-- the ones that can strand something degenerate, and those are the ones pinned.
+--
+-- FIT IS STILL REQUIRED. The caller must combine this with calloutFitsOnePage(): a box that
+-- needs pinning but does not fit the text block HANGS xelatex (see FIT above), so it stays
+-- breakable and the pre-flight check reports it. Needing a pin never earns one.
+--
+-- NOT ASKED FOR PROMPTREFS, and that is not an oversight. A promptref's tail is a `Link:`
+-- line and its footnote, which is degenerate by construction and was four of the five
+-- class-2 instances; those boxes pin on fit alone at their own call site. This test is for
+-- the boxes whose tail is only knowable by looking -- `::: code`, `::: info` and the rest.
+local CLOSER_ONLY = '^[%s%]%}%)]*[%]%}%)][%s%]%}%),;]*$'
+
+local function code_text_of(blk)
+  -- Pre-minted (this filter running first) and post-minted (the print pipeline) both occur;
+  -- estimate_block() handles the same two shapes for the same reason.
+  if blk.t == 'CodeBlock' then return blk.text end
+  if blk.t == 'RawBlock' and (blk.format == 'latex' or blk.format == 'tex') then
+    return blk.text:match('\\begin{minted}%b{}\n(.-)\n\\end{minted}')
+  end
+  return nil
+end
+
+local function tailWouldStrand(blocks)
+  for _, blk in ipairs(blocks) do
+    local code = code_text_of(blk)
+    if code then
+      -- A closer-only LAST line means the block ends in a tail carrying nothing a reader can
+      -- use; one such line is enough, because one `}` alone at the head of a page is the same
+      -- fault as p80's five. Blank lines are skipped so trailing newlines do not mask it.
+      -- ANY code block in the box counts, not just the last one -- a box with two blocks can
+      -- split so that the first block's tail opens a page.
+      local last = nil
+      for line in (code .. '\n'):gmatch('(.-)\n') do
+        if line:match('%S') then last = line end
+      end
+      if last and last:match(CLOSER_ONLY) then return true end
+    elseif blk.t == 'Div' or blk.t == 'BlockQuote' then
+      if tailWouldStrand(blk.content) then return true end
+    elseif blk.t == 'BulletList' or blk.t == 'OrderedList' then
+      for _, item in ipairs(blk.content) do
+        if tailWouldStrand(item) then return true end
+      end
+    end
+  end
+  return false
+end
+
 -- A callout and its two float barriers travel in ONE RawBlock.
 --
 -- keep-leadin-with-content.lua recognises a callout either as a Div (the print pipeline runs
@@ -520,9 +583,10 @@ local function barriered(latex)
   return pandoc.RawBlock('latex', barrier .. '\n' .. latex .. '\n' .. barrier)
 end
 
--- `breakable` for a box that must be allowed to split, `breakable=false` for one that fits.
-local function breakOption(fits)
-  return fits and 'breakable=false' or 'breakable'
+-- `breakable` for a box that must be allowed to split, `breakable=false` for one that is
+-- PINNED -- which since round 8's second pass means it both fits and would strand a tail.
+local function breakOption(pinned)
+  return pinned and 'breakable=false' or 'breakable'
 end
 
 -- A LaTeX COMMENT recording what the estimator decided and why, emitted immediately before
@@ -545,7 +609,13 @@ end
 -- `est=?` means the estimator declined to measure the box (an Image, a raw inline, a table,
 -- a hard break it could not place), in which case `pinned` is always 0. A line is written for
 -- EVERY callout, pinned or not, so the check can also report how close an unpinned box came.
-local function emitFitProvenance(calloutType, fits, estimate, title)
+--
+-- `pinned` is the DECISION (fit AND a strandable tail) and must equal the box's own
+-- `breakable=false`: check-pinned-callouts.js cross-checks the two and errors if they
+-- disagree. `fits=` records the fit answer alone, so the check can still report how close an
+-- unpinned box came -- since round 8's second pass most unpinned boxes fit and were left
+-- breakable on purpose, and without this key that distinction is unrecoverable from the .tex.
+local function emitFitProvenance(calloutType, pinned, estimate, title, fits)
   -- One line, always. A title is an attribute value and so cannot contain a newline, but a
   -- control character or a stray `\n` from a future caller would comment out the
   -- \begin{tcolorbox} that follows, so it is flattened and bounded rather than trusted.
@@ -554,11 +624,13 @@ local function emitFitProvenance(calloutType, fits, estimate, title)
     :gsub('%s+', ' ')
     :gsub('^%s*(.-)%s*$', '%1')
   if charcount(safe) > 180 then safe = safe:sub(1, 180) end
-  return string.format('%%%%CALLOUTFIT type=%s pinned=%d est=%s budget=%s title=%s',
+  return string.format(
+    '%%%%CALLOUTFIT type=%s pinned=%d est=%s budget=%s fits=%d title=%s',
     calloutType,
-    fits and 1 or 0,
+    pinned and 1 or 0,
     estimate and string.format('%.2f', estimate) or '?',
     PIN_BUDGET and tostring(PIN_BUDGET) or 'none',
+    fits and 1 or 0,
     safe)
 end
 
@@ -696,8 +768,14 @@ function generatePromptRefCallout(content, elem)
     extra = extra + FIT.em * 0.3                                    -- \vspace{0.3em}
   end
   local fits, estimate = calloutFitsOnePage(content, { title = promptName, extra_height = extra })
+  -- A promptref needs no tail TEST: it ends in a `Link:` line and its footnote by
+  -- construction, and that tail is degenerate -- four of the five class-2 instances round 8
+  -- set out to fix were promptrefs whose footnote was orphaned overleaf, round 7's p215
+  -- opening on nothing but a rule and a bare URL. So promptrefs pin on fit alone, and the
+  -- narrower tail rule below applies to the boxes whose tail is not known in advance.
+  local pinned = fits
 
-  local latex = emitFitProvenance('promptref', fits, estimate, promptName) .. '\n' .. string.format([[
+  local latex = emitFitProvenance('promptref', pinned, estimate, promptName, fits) .. '\n' .. string.format([[
 \begin{tcolorbox}[
   colback=cyan!5!white,
   colframe=cyan!75!black,
@@ -711,7 +789,7 @@ function generatePromptRefCallout(content, elem)
   bottom=0.5em
 ]
 
-]], promptName, breakOption(fits))
+]], promptName, breakOption(pinned))
 
   if numBlocks > 1 then
     -- Multiple blocks: description is all but last, preview is last
@@ -762,8 +840,11 @@ function generateLatexCallout(calloutType, content, elem)
   -- a 16-source-line JSON sample that split so that "] } } } }" opened the page alone.
   -- config.title is a fixed word ("Code", "Info", ...), so the boxed title never wraps.
   local fits, estimate = calloutFitsOnePage(content, { title = config.title })
+  -- The p.80 box is exactly this case: it fits AND its JSON ends in five closers, so it pins.
+  -- Its 24 neighbours that merely fit now stay breakable, which is where the pages come back.
+  local pinned = fits and tailWouldStrand(content)
 
-  local latex = emitFitProvenance(calloutType, fits, estimate, config.title) .. '\n' .. string.format([[
+  local latex = emitFitProvenance(calloutType, pinned, estimate, config.title, fits) .. '\n' .. string.format([[
 \begin{tcolorbox}[
   colback=%s!5!white,
   colframe=%s!75!black,
@@ -776,7 +857,7 @@ function generateLatexCallout(calloutType, content, elem)
   top=0.75em,
   bottom=0.5em%s
 ]
-]], config.latexcolor, config.latexcolor, config.title, breakOption(fits),
+]], config.latexcolor, config.latexcolor, config.title, breakOption(pinned),
     config.latexcolor, extraOptions)
 
   -- Add content
