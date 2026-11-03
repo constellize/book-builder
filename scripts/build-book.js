@@ -29,6 +29,41 @@ const { postProcessDocx } = require("./lib/docx-postprocess.js");
 // template is the only place that can safely declare it.
 const { readCalloutPinBudget } = require("./lib/callout-pin-budget.js");
 
+// Pre-flight fit check. A callout the filter pinned (breakable=false) that does not actually
+// fit the text block does not warn and does not overfull -- it hangs xelatex. This measures
+// every pinned box for real, between pandoc and xelatex, and fails the build naming the box.
+// See scripts/check-pinned-callouts.js.
+const {
+  checkPinnedCallouts,
+  report: reportPinnedCallouts,
+} = require("./check-pinned-callouts.js");
+
+// ---------------------------------------------------------------------------------------
+// XELATEX TIMEOUT: the backstop behind the pre-flight check.
+//
+// The pre-flight check measures what it can see. The failure mode it guards against -- an
+// unbreakable box that does not fit, which makes xelatex ship empty pages forever -- has no
+// other symptom: no warning, no error, no `Overfull \vbox`, and no log, because a build that
+// never finishes never writes one. `-halt-on-error` cannot rescue it. So the build also caps
+// each xelatex run, kills it on expiry and says what the likely cause is.
+//
+// WHY 600 SECONDS PER RUN, AND WHY PER RUN. pandoc invokes the engine several times (it reruns
+// for the table of contents and cross-references), so a whole-build cap would have to be the
+// sum and could not say which pass went wrong. The cap is per invocation.
+//
+// MEASURED on the reference machine (M-series Mac, TeX Live 2025, this 267-page book at the
+// 6x9 trim): 8-9 seconds per xelatex pass, three passes, warm or cold -- clearing the minted
+// cache changed it by under a second. 600s is about 67x the slowest pass measured. That
+// leaves room for a far slower laptop, a machine under load, a cold Python environment for
+// minted's pygmentize, and a book half again as long, while bounding the wait at ten minutes
+// instead of the hours or days a hung build otherwise burns.
+//
+// It is a backstop, not a performance budget: a build that reaches it is broken, and the only
+// cost of being generous is how long you wait to be told so. A build that is merely slow
+// should not be killed, which is why the factor is 67 and not 5.
+// ---------------------------------------------------------------------------------------
+const XELATEX_TIMEOUT_SECONDS = 600;
+
 class BookBuilder {
   constructor(options = {}) {
     this.options = {
@@ -873,6 +908,61 @@ class BookBuilder {
   }
 
   /**
+   * Measure every pinned callout before xelatex typesets the book, and fail if one does not
+   * fit. See the block comment at the call site, and scripts/check-pinned-callouts.js.
+   *
+   * @param {string[]} pandocArgs the real build's argument list, unmodified
+   * @param {object} execOptions the real build's exec options (cwd and extended PATH)
+   */
+  async preflightPinnedCallouts(pandocArgs, execOptions) {
+    console.log(chalk.yellow("📐 Pre-flight: measuring pinned callouts..."));
+
+    const intermediateDir = path.join(this.buildDir, "intermediate");
+    await fs.ensureDir(intermediateDir);
+    const texPath = path.join(intermediateDir, "preflight.tex");
+    const workdir = path.join(intermediateDir, "pinfit");
+    await fs.remove(texPath);
+    await fs.remove(workdir);
+
+    // The SAME command, writing LaTeX instead of a PDF. Derived rather than rewritten, so
+    // the boxes measured are the boxes the build is about to typeset: same defaults, same
+    // filters, same template, same pin budget.
+    const texArgs = pandocArgs
+      .filter((a) => !a.startsWith("--pdf-engine"))
+      .map((a) => {
+        if (a.startsWith("--to=")) return "--to=latex";
+        if (a.startsWith("--output=")) return `--output="${texPath}"`;
+        return a;
+      });
+
+    try {
+      execSync(texArgs.join(" "), execOptions);
+    } catch (error) {
+      // Not a fit failure: pandoc could not produce the .tex at all, and the real run is
+      // about to fail the same way with a better message. Warn and let it.
+      console.log(chalk.yellow(
+        `⚠️  Pre-flight fit check NOT CHECKED: pandoc could not emit LaTeX (${error.message})`));
+      return;
+    }
+
+    const result = checkPinnedCallouts({
+      tex: texPath,
+      workdir,
+      json: path.join(intermediateDir, "preflight-pinfit.json"),
+      cwd: this.rootDir,
+      env: execOptions.env,
+    });
+    reportPinnedCallouts(result);
+
+    if (result.status === "fail") {
+      throw new Error(
+        "a pinned callout does not fit the text block (see the boxes named above).\n" +
+        "   This is a HARD failure on purpose: an unbreakable box taller than the page does\n" +
+        "   not warn and does not overfull, it makes xelatex ship empty pages forever.");
+    }
+  }
+
+  /**
    * Generate the final book using Pandoc
    */
   async generateBook() {
@@ -1071,6 +1161,10 @@ class BookBuilder {
     // Template, if the target has one (epub3 uses pandoc's built-in template).
     // For PDF targets this also overrides whatever `template:` the defaults file
     // declares, which is why the defaults files no longer declare one at all.
+    //
+    // Declared outside the block because the pre-flight fit check below needs it: a template
+    // that declares no budget pins nothing, so there is nothing for the check to measure.
+    let declaredPinBudget = null;
     if (templatePath) {
       pandocArgs.push(`--template="${templatePath}"`);
 
@@ -1086,7 +1180,7 @@ class BookBuilder {
       //
       // Reading the template is a measurement, never a build dependency: a template that
       // declares nothing simply gets no metadata and its callouts stay breakable.
-      const declaredPinBudget = readCalloutPinBudget(
+      declaredPinBudget = readCalloutPinBudget(
         await fs.readFile(templatePath, 'utf8').catch(() => '')
       );
       if (declaredPinBudget !== null) {
@@ -1122,27 +1216,72 @@ class BookBuilder {
       console.log(chalk.gray(`Command: ${pandocCommand}`));
     }
 
+    const execOptions = {
+      stdio: this.options.verbose ? "inherit" : "pipe",
+      cwd: this.rootDir,
+    };
+
+    // For PDF builds, extend PATH to include TeX Live and Python venv
+    let timeoutMarker = null;
+    if (isPdfTarget) {
+      const venvPath = path.resolve(this.toolsDir, '.venv/bin');
+      const extendedPath =
+        venvPath + ':' +
+        process.env.PATH +
+        ":/usr/local/texlive/2025/bin/universal-darwin:/usr/local/texlive/2024/bin/universal-darwin:/usr/local/texlive/2023/bin/universal-darwin";
+      timeoutMarker = path.join(this.buildDir, 'intermediate', '.xelatex-timed-out');
+      await fs.remove(timeoutMarker);
+      execOptions.env = { ...process.env, PATH: extendedPath,
+        XELATEX_LOG_DEST: outputPath.replace(/\.pdf$/, '.xelatex.log'),
+        // The backstop. The wrapper caps each xelatex run, and leaves the marker behind so
+        // this build can tell a timeout apart from any other non-zero exit and say what the
+        // likely cause is. Without the wrapper (lost exec bit, Windows) there is no timeout
+        // either, which is the pre-round-8 behaviour: the pre-flight check below is then the
+        // only guard, and it is the one that matters.
+        XELATEX_TIMEOUT: String(XELATEX_TIMEOUT_SECONDS),
+        XELATEX_TIMEOUT_MARKER: timeoutMarker };
+      // A log left by an earlier build must not be read as this build's.
+      await fs.remove(execOptions.env.XELATEX_LOG_DEST);
+    }
+
+    // ------------------------------------------------------------------
+    // PRE-FLIGHT FIT CHECK, between pandoc and xelatex.
+    //
+    // Runs only when the template declared a pin budget, because that is the only case in
+    // which the filter sets `breakable=false` on anything. It re-runs pandoc to LaTeX with
+    // the SAME arguments (so the same filters make the same pin decisions), then typesets
+    // each pinned box alone and measures it. A box that does not fit fails the build.
+    //
+    // This is the one hard failure in this build system, and it is hard because the
+    // alternative is not a worse book: an unbreakable box that does not fit makes xelatex
+    // ship empty pages forever. See scripts/check-pinned-callouts.js.
+    //
+    // The second pandoc run costs seconds against a multi-minute xelatex build. Deriving the
+    // .tex command from the real one, rather than writing a second command, is deliberate:
+    // a pre-flight check that measured a differently-filtered document would be measuring
+    // the wrong boxes.
+    // ------------------------------------------------------------------
+    if (isPdfTarget && declaredPinBudget !== null) {
+      await this.preflightPinnedCallouts(pandocArgs, execOptions);
+    }
+
     try {
-      const execOptions = {
-        stdio: this.options.verbose ? "inherit" : "pipe",
-        cwd: this.rootDir,
-      };
-
-      // For PDF builds, extend PATH to include TeX Live and Python venv
-      if (isPdfTarget) {
-        const venvPath = path.resolve(this.toolsDir, '.venv/bin');
-        const extendedPath =
-          venvPath + ':' +
-          process.env.PATH +
-          ":/usr/local/texlive/2025/bin/universal-darwin:/usr/local/texlive/2024/bin/universal-darwin:/usr/local/texlive/2023/bin/universal-darwin";
-        execOptions.env = { ...process.env, PATH: extendedPath,
-          XELATEX_LOG_DEST: outputPath.replace(/\.pdf$/, '.xelatex.log') };
-        // A log left by an earlier build must not be read as this build's.
-        await fs.remove(execOptions.env.XELATEX_LOG_DEST);
-      }
-
       execSync(pandocCommand, execOptions);
     } catch (error) {
+      if (timeoutMarker && await fs.pathExists(timeoutMarker)) {
+        throw new Error(
+          `xelatex exceeded the ${XELATEX_TIMEOUT_SECONDS}s cap and was killed.\n` +
+          `   The likeliest cause is a PINNED CALLOUT that does not fit the text block: a\n` +
+          `   breakable=false tcolorbox taller than the page makes xelatex ship empty pages\n` +
+          `   forever, with no warning, no error and no log. The pre-flight fit check\n` +
+          `   (scripts/check-pinned-callouts.js) runs before xelatex for exactly this and\n` +
+          `   passed, so if this fired, either a box it could not measure got pinned or the\n` +
+          `   cause is something else entirely.\n` +
+          `   Next steps: comment out \\calloutPinBudget in the print template (every callout\n` +
+          `   goes back to breakable, which cannot hang) and build again. If that build\n` +
+          `   finishes, it is the pinning; if it still hangs, it is not.\n` +
+          `   Original error: ${error.message}`);
+      }
       throw new Error(`Pandoc failed: ${error.message}`);
     }
 

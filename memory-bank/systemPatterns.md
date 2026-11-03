@@ -411,6 +411,75 @@ return for any callout that gains a sentence ending in a colon, with nothing in 
 the test suite to say why that box behaved differently. Written up in the filter at the foot
 of `estimate_block()`.
 
+### The pre-flight fit check, and the timeout behind it (round 8, final wave)
+
+**The estimator is no longer the only thing standing between a pin decision and a hung
+build.** `scripts/check-pinned-callouts.js` runs BETWEEN pandoc and xelatex on every print
+build: it typesets every `breakable=false` box ON ITS OWN, in a minimal document built from
+the book's real preamble, measures it with `\setbox0=\vbox{...}` / `\the\dimexpr\ht0+\dp0`,
+and **fails the build naming the box** if the measured height exceeds `\textheight`.
+
+Four things about it that are load-bearing:
+
+- **It measures; it does not re-check the estimate.** Checking a pinned box against the
+  estimator is circular — the estimator is what decided to pin it. All three breaches above
+  were found by reading code, not by anything the build measured.
+- **IT DOES NOT SHIP A BOX TO A PAGE.** Each box is measured inside a `\vbox` and discarded.
+  Putting an unbreakable box ON a page is exactly the operation that hangs, so a check that
+  rendered them would reproduce the fault it exists to prevent. A test asserts the probe
+  document contains no `\box0`, `\copy0` or `\unvbox`.
+- **It is the one hard failure in this build system**, and it is hard because the alternative
+  is not a worse book but an infinite build. Everything else here degrades to "not measured".
+  Without TeX, or with no pinned boxes in the document, it reports NOT CHECKED and exits 0 —
+  never a green pass over something it did not measure.
+- **It is geometry-independent, which is what makes it safe for a consuming book.** It reads
+  `\textheight` out of the probe run of that book's own preamble, so a book with an A5 or 10pt
+  template that declares a `\calloutPinBudget` gets checked against ITS page, not this one's.
+  A template that declares no budget pins nothing, so there is nothing to check and the check
+  does not run at all.
+
+**How the filter tells it what the estimate was.** `callout-filter-print.lua` opens every
+callout's raw block with a one-line LaTeX comment:
+
+    %%CALLOUTFIT type=code pinned=1 est=371.50 budget=433.6 title=Code
+
+`est=?` means the estimator declined to measure the box. The comment is the only place the
+estimate exists after pandoc has run, and re-deriving it in JavaScript would be a second
+implementation of the thing being checked. It rides inside the SAME `RawBlock` as the box and
+its barriers, for the same reason the barriers do (see above): its own block would be the one
+`keep-leadin-with-content.lua` matched.
+
+**The check also reports ESTIMATOR DRIFT**: any pinned box whose measured height exceeds its
+own estimate by more than 2pt, even when it still fits. That is a `FIT` bug, and an unnoticed
+one is how a box that fits today becomes a hang after a sentence is added to it. Drift is
+reported, not fatal — the fit check is what stands between it and the cliff. 2pt is chosen
+because the estimator is built to run HIGH (`FIT.box` holds 34.00 against a measured 31.71),
+so a measured height within a couple of points of the estimate already means a constant is
+wrong.
+
+**THE TIMEOUT BACKSTOP.** `scripts/lib/xelatex-keep-log/xelatex` now caps each xelatex run at
+`XELATEX_TIMEOUT` seconds (`build-book.js` sets 600), kills it on expiry, leaves a marker file
+so the build can tell a timeout from any other non-zero exit, and exits 124. `build-book.js`
+turns that into an error that names pinned callouts as the likely cause and says to comment
+out `\calloutPinBudget` and rebuild as the discriminating experiment. `timeout(1)` is
+deliberately NOT used: it is GNU coreutils and absent from a stock macOS, so the watchdog is
+POSIX sh.
+
+**Why 600s**: measured 8–9 seconds per xelatex pass for this 267-page book, three passes, and
+clearing the minted cache changed it by under a second. 600s is about 67x the slowest pass —
+generous enough for a far slower machine and a longer book, bounded enough that a hung build
+costs ten minutes instead of a day. A build that reaches it is broken; a build that is merely
+slow must not be killed.
+
+**One live drift finding, reported not fixed (2026-11-02).** One pinned `code` callout
+measures 383.82pt against an estimate of 371.50pt — **+12.32pt, in the unsafe direction**. The
+cause is not a `FIT` constant: `code_chars` models every rendered line as getting the same
+width, but minted's `breakautoindent` aligns a wrapped continuation under the ORIGINAL LINE'S
+INDENTATION, so a deeply indented 96-character source line (`ch?.md`'s
+`when(promptService.getPromptById(samplePromptId))...`, 10 leading spaces) renders as THREE
+lines where `ceil(96/48)` predicts two. The box has 158pt of headroom to `\textheight`, so it
+is not a live hang; the model hole is real and is now measured on every print build.
+
 **Deliberate exclusions** (each returns "do not pin", which is the pre-existing behaviour):
 - **conversation callouts**, always. They are the only callout whose body is a stack of
   nested tcolorboxes, one per turn, each adding a frame rule, 0.3em of padding top and bottom

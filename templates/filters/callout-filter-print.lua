@@ -423,19 +423,24 @@ end
 --
 -- Interface note for the sibling filters: this answers only "does it fit", never "should it
 -- be pinned". generateConversationCallout deliberately does not ask -- see there.
+-- Returns `fits`, and the ESTIMATE IN POINTS as a second value (nil when the box could not
+-- be measured at all, or when no budget is declared). The estimate is second because every
+-- existing caller wants only the boolean; it is returned at all because
+-- scripts/check-pinned-callouts.js cross-checks each pinned box's estimate against its real
+-- measured height, and the only place that number exists is here. See emitFitProvenance().
 function calloutFitsOnePage(contentBlocks, extras)
   -- No template-declared budget, no pinning. This is the I-1 gate: the FIT constants
   -- describe one page geometry and the filter cannot tell which one it is rendering onto.
-  if not PIN_BUDGET then return false end
+  if not PIN_BUDGET then return false, nil end
   extras = extras or {}
   local h = estimate_blocks(contentBlocks)
-  if not h then return false end
+  if not h then return false, nil end
 
   h = h + FIT.box + (extras.extra_height or 0)
   if extras.title then
     h = h + FIT.title_line * (wrapped(extras.title, FIT.title_chars) - 1)
   end
-  return h <= PIN_BUDGET
+  return h <= PIN_BUDGET, h
 end
 
 -- A callout and its two float barriers travel in ONE RawBlock.
@@ -456,6 +461,43 @@ end
 -- `breakable` for a box that must be allowed to split, `breakable=false` for one that fits.
 local function breakOption(fits)
   return fits and 'breakable=false' or 'breakable'
+end
+
+-- A LaTeX COMMENT recording what the estimator decided and why, emitted immediately before
+-- every callout box.
+--
+-- WHY IT EXISTS. A pinned box that does not fit the text block does not warn and does not
+-- overfull -- it hangs xelatex (see FIT above). The only way to know a pin decision was right
+-- is to typeset the box and measure it, which `scripts/check-pinned-callouts.js` does on the
+-- emitted .tex before xelatex sees the book. That check needs three things this filter is the
+-- only holder of: the estimate the decision was made with, the callout type, and the title
+-- (so a failure can name the box rather than a byte offset). None of them survives into the
+-- LaTeX any other way, and re-deriving the estimate in JavaScript would be a second
+-- implementation of the estimator -- which is exactly the thing being checked.
+--
+-- It is a comment, so it is inert in TeX and costs the output nothing. The format is
+-- deliberately rigid and machine-first (key=value, one line, `%` in column 1):
+--
+--     %%CALLOUTFIT type=code pinned=1 est=308.70 budget=433.6 title=Code
+--
+-- `est=?` means the estimator declined to measure the box (an Image, a raw inline, a table,
+-- a hard break it could not place), in which case `pinned` is always 0. A line is written for
+-- EVERY callout, pinned or not, so the check can also report how close an unpinned box came.
+local function emitFitProvenance(calloutType, fits, estimate, title)
+  -- One line, always. A title is an attribute value and so cannot contain a newline, but a
+  -- control character or a stray `\n` from a future caller would comment out the
+  -- \begin{tcolorbox} that follows, so it is flattened and bounded rather than trusted.
+  local safe = tostring(title or '')
+    :gsub('[%c]', ' ')
+    :gsub('%s+', ' ')
+    :gsub('^%s*(.-)%s*$', '%1')
+  if charcount(safe) > 180 then safe = safe:sub(1, 180) end
+  return string.format('%%%%CALLOUTFIT type=%s pinned=%d est=%s budget=%s title=%s',
+    calloutType,
+    fits and 1 or 0,
+    estimate and string.format('%.2f', estimate) or '?',
+    PIN_BUDGET and tostring(PIN_BUDGET) or 'none',
+    safe)
 end
 
 -- Generate conversation callout (chat-style with human/AI/reflection) - Print style
@@ -480,7 +522,8 @@ end
 -- publisher's review and the fault detector found is a conversation callout, so there is
 -- nothing to buy with that risk. Conversation callouts do get the float barriers.
 function generateConversationCallout(content)
-  local latex = [[
+  -- `est=?` and `pinned=0`, honestly: no estimate is taken for a conversation box at all.
+  local latex = emitFitProvenance('conversation', false, nil, callouts.conversation.title) .. '\n' .. [[
 \begin{tcolorbox}[
   colback=teal!5!white,
   colframe=teal!75!black,
@@ -590,9 +633,9 @@ function generatePromptRefCallout(content, elem)
   if numBlocks > 1 then
     extra = extra + FIT.em * 0.3                                    -- \vspace{0.3em}
   end
-  local fits = calloutFitsOnePage(content, { title = promptName, extra_height = extra })
+  local fits, estimate = calloutFitsOnePage(content, { title = promptName, extra_height = extra })
 
-  local latex = string.format([[
+  local latex = emitFitProvenance('promptref', fits, estimate, promptName) .. '\n' .. string.format([[
 \begin{tcolorbox}[
   colback=cyan!5!white,
   colframe=cyan!75!black,
@@ -656,9 +699,9 @@ function generateLatexCallout(calloutType, content, elem)
   -- The p.80 instance the publisher reported was one of these: a `::: code` callout holding
   -- a 16-source-line JSON sample that split so that "] } } } }" opened the page alone.
   -- config.title is a fixed word ("Code", "Info", ...), so the boxed title never wraps.
-  local fits = calloutFitsOnePage(content, { title = config.title })
+  local fits, estimate = calloutFitsOnePage(content, { title = config.title })
 
-  local latex = string.format([[
+  local latex = emitFitProvenance(calloutType, fits, estimate, config.title) .. '\n' .. string.format([[
 \begin{tcolorbox}[
   colback=%s!5!white,
   colframe=%s!75!black,

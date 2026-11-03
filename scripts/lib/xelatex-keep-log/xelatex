@@ -4,6 +4,24 @@
 # temp directory (which pandoc deletes) to $XELATEX_LOG_DEST. pandoc runs the engine more
 # than once; the last run's log wins, which is the one that produced the final PDF.
 # Exit status is xelatex's own. Without XELATEX_LOG_DEST this is a plain pass-through.
+#
+# IT ALSO CAPS THE RUN, when $XELATEX_TIMEOUT is set to a number of seconds.
+#
+# WHY. The fault class this whole round is about -- a `breakable=false` tcolorbox taller than
+# the text block -- does not warn, does not error, does not produce an `Overfull \vbox` and
+# cannot be stopped by `-halt-on-error`. xelatex ships empty pages forever (139,000 of them
+# before the original probe was killed by hand). A build that never finishes writes no log and
+# no PDF, so every other check in this system is blind to it: there is nothing to read.
+# scripts/check-pinned-callouts.js is the real guard and runs before this; this is the
+# backstop behind it, so the symptom is a diagnosable error after a bounded wait instead of a
+# terminal that is still going tomorrow.
+#
+# `timeout` is NOT used: it is GNU coreutils and is absent from a stock macOS, which is the
+# machine this book is built on. A watchdog in POSIX sh works everywhere.
+#
+# On expiry the marker file $XELATEX_TIMEOUT_MARKER is created (build-book.js reads it to
+# tell a timeout apart from any other non-zero exit) and the exit status is 124, matching
+# `timeout`'s convention.
 outdir=""
 prev=""
 for a in "$@"; do
@@ -15,11 +33,51 @@ done
 here=$(cd "$(dirname "$0")" && pwd)
 PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$here" | paste -sd: -)
 export PATH
-xelatex "$@"
-status=$?
+
+timed_out=0
+case "$XELATEX_TIMEOUT" in
+  ''|*[!0-9]*) cap=0 ;;   # unset, empty or not a plain number: no cap, pass-through as before
+  *)           cap=$XELATEX_TIMEOUT ;;
+esac
+
+if [ "$cap" -gt 0 ]; then
+  # xelatex in the background, a watchdog beside it. The watchdog is killed as soon as
+  # xelatex exits, so a normal run pays nothing for it.
+  xelatex "$@" &
+  tex_pid=$!
+  (
+    i=0
+    while [ "$i" -lt "$cap" ]; do
+      kill -0 "$tex_pid" 2>/dev/null || exit 0
+      sleep 1
+      i=$((i + 1))
+    done
+    kill -0 "$tex_pid" 2>/dev/null || exit 0
+    [ -n "$XELATEX_TIMEOUT_MARKER" ] && : > "$XELATEX_TIMEOUT_MARKER"
+    echo "xelatex-keep-log: xelatex exceeded ${cap}s; killing it." >&2
+    echo "xelatex-keep-log: the likeliest cause is a pinned (breakable=false) callout that" >&2
+    echo "  does not fit the text block -- that hangs xelatex rather than warning." >&2
+    kill -TERM "$tex_pid" 2>/dev/null
+    sleep 5
+    kill -KILL "$tex_pid" 2>/dev/null
+  ) &
+  watchdog=$!
+  wait "$tex_pid"
+  status=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  if [ -n "$XELATEX_TIMEOUT_MARKER" ] && [ -f "$XELATEX_TIMEOUT_MARKER" ]; then
+    timed_out=1
+  fi
+else
+  xelatex "$@"
+  status=$?
+fi
+
 if [ -n "$XELATEX_LOG_DEST" ] && [ -n "$outdir" ]; then
   # pandoc's input is always input.tex, so its log is input.log. Take that one by name,
   # never "the first *.log": a second log in the directory must not be copied by mistake.
   [ -f "$outdir/input.log" ] && cp "$outdir/input.log" "$XELATEX_LOG_DEST"
 fi
+[ "$timed_out" -eq 1 ] && exit 124
 exit $status

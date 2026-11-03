@@ -166,9 +166,13 @@ maybe('callout filter: float barriers', () => {
     // own block and a barrier inside the box's block look identical, and it is the block
     // boundary that keep-leadin-with-content.lua reads.
     const blocks = dumpBlocks('::: info\nhello\n:::\n')
-      .filter(l => /FloatBarrier|tcolorbox/.test(l));
+      .filter(l => /FloatBarrier|tcolorbox|CALLOUTFIT/.test(l));
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatch(/^RawBlock\|.*\\FloatBarrier.*\\begin\{tcolorbox\}/);
+    // The %%CALLOUTFIT provenance comment rides in the SAME block, and that matters for the
+    // same reason the barrier does: emitted as its own RawBlock it would be the block
+    // keep-leadin-with-content.lua matched, and the callout would drop to five lines.
+    expect(blocks[0]).toMatch(
+      /^RawBlock\|.*\\FloatBarrier.*%%CALLOUTFIT type=info pinned=1 .*\\begin\{tcolorbox\}/);
   });
 });
 
