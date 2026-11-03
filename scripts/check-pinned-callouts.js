@@ -290,10 +290,13 @@ function parseArgs(argv) {
 }
 
 /**
+ * The measuring pass. `checkPinnedCallouts()` wraps this to write the JSON artifact; call
+ * that one, not this.
+ *
  * @returns {{status:'pass'|'fail'|'not-checked', ...}} status is the only thing a caller has
  *   to read. 'not-checked' is never reported as a pass.
  */
-function checkPinnedCallouts(options) {
+function measurePinnedCallouts(options) {
   // Defaults applied HERE, not only in parseArgs(): build-book.js calls this directly and a
   // missing timeout used to reach spawnSync as NaN and throw before anything was measured.
   const opts = {
@@ -458,6 +461,69 @@ function checkPinnedCallouts(options) {
   return result;
 }
 
+/**
+ * The machine-readable form of a result: the VERDICT PLUS EVERY MEASUREMENT BEHIND IT.
+ *
+ * The per-box heights are the only record of what the probe actually saw. A file holding
+ * just `status` would be the same unfalsifiable artifact that let three "reports zero
+ * because it measured nothing" bugs through this round, so `measured` carries one entry per
+ * pinned box with its estimate, its measured height and its drift, and `unmeasured` carries
+ * the boxes that produced no height at all -- without that list a fail whose only cause is
+ * an unmeasured box serialises as `failures: []` and reads as clean.
+ */
+function jsonArtifact(result) {
+  return {
+    status: result.status,
+    reason: result.reason || null,
+    usable: result.usable || null,
+    tolerance: result.tolerance || null,
+    pinnedCount: result.pinnedCount || 0,
+    calloutCount: (result.callouts || []).length,
+    measured: (result.measured || []).map((b) => ({
+      index: b.index, type: b.type, title: b.title,
+      estimate: b.estimate, measured: b.measured, fits: b.fits, driftBy: b.driftBy,
+    })),
+    failures: (result.failures || []).map((b) => ({
+      index: b.index, type: b.type, title: b.title, measured: b.measured, overBy: b.overBy,
+    })),
+    unmeasured: (result.unmeasured || []).map((b) => ({
+      index: b.index, type: b.type, title: b.title, estimate: b.estimate,
+    })),
+    drift: (result.drift || []).map((b) => ({
+      index: b.index, type: b.type, title: b.title,
+      estimate: b.estimate, measured: b.measured, driftBy: b.driftBy,
+    })),
+  };
+}
+
+/**
+ * Measure, then write the JSON artifact when one was asked for.
+ *
+ * THE WRITE LIVES HERE, NOT IN main(). It used to be in main() only, so `json:` was silently
+ * ignored by every library caller -- and build-book.js IS a library caller, which is why
+ * `build/intermediate/preflight-pinfit.json` was never produced by a real print build. The
+ * check reported correctly and left no measurements behind it.
+ *
+ * It wraps EVERY return path, including the 'not-checked' ones, so the artifact also records
+ * why nothing was measured. A write that fails warns and does not change the verdict: the
+ * artifact is the evidence, `status` is the answer, and losing the evidence must not turn a
+ * failing build green (or a passing one red). It is never silent, though -- an artifact that
+ * was asked for and did not appear is exactly the thing this file exists to stop.
+ */
+function checkPinnedCallouts(options) {
+  const result = measurePinnedCallouts(options);
+  const out = options && options.json;
+  if (out) {
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+      fs.writeFileSync(out, `${JSON.stringify(jsonArtifact(result), null, 2)}\n`);
+    } catch (error) {
+      console.error(`⚠️  could not write the fit check's JSON artifact to ${out}: ${error.message}`);
+    }
+  }
+  return result;
+}
+
 function describe(box) {
   const title = box.title ? `"${box.title}"` : '(untitled)';
   const ex = box.source ? excerpt(box.source) : '';
@@ -522,29 +588,11 @@ function main() {
     console.error('usage: check-pinned-callouts.js <book.tex> [--tolerance PT] [--workdir DIR] [--json OUT] [--timeout S] [--quiet]');
     process.exit(2);
   }
+  // checkPinnedCallouts() writes the --json artifact itself, for the CLI and for every
+  // library caller alike. main() must NOT write it again: a second copy here is how the two
+  // paths drifted apart in the first place.
   const result = checkPinnedCallouts(opts);
   report(result, opts);
-  if (opts.json) {
-    fs.writeFileSync(opts.json, `${JSON.stringify({
-      status: result.status,
-      reason: result.reason || null,
-      usable: result.usable || null,
-      tolerance: result.tolerance || null,
-      pinnedCount: result.pinnedCount || 0,
-      calloutCount: (result.callouts || []).length,
-      measured: (result.measured || []).map((b) => ({
-        index: b.index, type: b.type, title: b.title,
-        estimate: b.estimate, measured: b.measured, fits: b.fits, driftBy: b.driftBy,
-      })),
-      failures: (result.failures || []).map((b) => ({
-        index: b.index, type: b.type, title: b.title, measured: b.measured, overBy: b.overBy,
-      })),
-      drift: (result.drift || []).map((b) => ({
-        index: b.index, type: b.type, title: b.title,
-        estimate: b.estimate, measured: b.measured, driftBy: b.driftBy,
-      })),
-    }, null, 2)}\n`);
-  }
   // 'not-checked' exits 0: consistent with the rest of this build system, which degrades to
   // "not measured" rather than failing a build over a missing measurement tool. It is never
   // reported as a pass.
@@ -555,6 +603,8 @@ if (require.main === module) main();
 
 module.exports = {
   checkPinnedCallouts,
+  measurePinnedCallouts,
+  jsonArtifact,
   report,
   splitPreamble,
   extractEnvironment,

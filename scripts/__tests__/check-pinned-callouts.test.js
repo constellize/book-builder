@@ -34,6 +34,7 @@ const {
   findCallouts,
   buildProbe,
   excerpt,
+  jsonArtifact,
 } = require(path.join(SCRIPTS, 'check-pinned-callouts.js'));
 const { readCalloutPinBudget } = require('../lib/callout-pin-budget.js');
 
@@ -183,6 +184,61 @@ describe('reading the emitted .tex', () => {
     expect(r.reason).toMatch(/no pinned callouts/);
   });
 
+  // --------------------------------------------------------------------------------------
+  // The JSON artifact
+  //
+  // `json:` used to be honoured only by main(), so every LIBRARY caller's artifact was
+  // silently dropped -- and build-book.js is a library caller, which is why a real print
+  // build never produced build/intermediate/preflight-pinfit.json. The check reported a
+  // correct verdict and left no measurements behind it, which is the shape of all three
+  // "reports zero because it measured nothing" bugs this round turned up.
+  // --------------------------------------------------------------------------------------
+
+  test('json: is honoured by the LIBRARY entry point, not only by the CLI', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pinfit-test-'));
+    const out = path.join(tmp, 'nested', 'preflight-pinfit.json');
+    const r = checkPinnedCallouts({ tex: path.join(tmp, 'absent.tex'), json: out, quiet: true });
+    expect(r.status).toBe('not-checked');
+    // Written even on a not-checked path: the artifact records WHY nothing was measured.
+    expect(fs.existsSync(out)).toBe(true);
+    const art = JSON.parse(fs.readFileSync(out, 'utf8'));
+    expect(art.status).toBe('not-checked');
+    expect(art.reason).toMatch(/no such \.tex/);
+    expect(art.measured).toEqual([]);
+  });
+
+  test('the artifact carries the per-box numbers, not just a verdict', () => {
+    // jsonArtifact() is asserted directly as well as through a real measurement below, so
+    // the shape is pinned even where xelatex is unavailable.
+    const art = jsonArtifact({
+      status: 'fail',
+      usable: 542.03,
+      tolerance: 2,
+      pinnedCount: 2,
+      callouts: [{}, {}, {}],
+      measured: [
+        { index: 1, type: 'code', title: 'A', estimate: 371.5, measured: 383.82, fits: true, driftBy: 12.32 },
+        { index: 2, type: 'info', title: 'B', estimate: 100, measured: 600, fits: false, driftBy: 500 },
+      ],
+      failures: [{ index: 2, type: 'info', title: 'B', measured: 600, overBy: 57.97 }],
+      unmeasured: [{ index: 3, type: 'rule', title: 'C', estimate: 50 }],
+      drift: [{ index: 1, type: 'code', title: 'A', estimate: 371.5, measured: 383.82, driftBy: 12.32 }],
+    });
+    // The measurements, per box, with what each was pinned against.
+    expect(art.measured).toHaveLength(2);
+    expect(art.measured[0]).toEqual({
+      index: 1, type: 'code', title: 'A', estimate: 371.5, measured: 383.82, fits: true, driftBy: 12.32,
+    });
+    expect(art.measured[1].measured).toBe(600);
+    expect(art.failures[0].overBy).toBeCloseTo(57.97, 2);
+    expect(art.drift[0].driftBy).toBeCloseTo(12.32, 2);
+    // A box that produced NO height is its own list. Without it a fail caused only by an
+    // unmeasured box serialises as `failures: []` and reads as clean.
+    expect(art.unmeasured).toEqual([{ index: 3, type: 'rule', title: 'C', estimate: 50 }]);
+    expect(art.pinnedCount).toBe(2);
+    expect(art.calloutCount).toBe(3);
+  });
+
   // THE LOAD-BEARING SAFETY PROPERTY. Putting an unbreakable box ON a page is the operation
   // that hangs xelatex. The probe measures inside a \vbox and throws the box away; if it ever
   // shipped one, the check would reproduce the fault it exists to prevent.
@@ -271,6 +327,30 @@ measuring('measuring real boxes', () => {
     expect(r.measured[0].measured).toBeLessThan(r.usable);
     // ...and the estimator was not short.
     expect(r.measured[0].driftBy).toBeLessThanOrEqual(r.tolerance);
+  }, 300000);
+
+  // The artifact a real pre-flight leaves behind. This is the end-to-end half of the two
+  // json: tests above: the file must hold the heights TeX actually measured, so that a
+  // later reader has the numbers and not only the pass.
+  test('a real measurement is written to the json: path, heights and all', () => {
+    const tex = printTex(`${codeCallout(8)}\n`, tmp);
+    const out = path.join(tmp, 'artifact', 'preflight-pinfit.json');
+    const r = checkPinnedCallouts({
+      tex, quiet: true, cwd: BOOK_ROOT, env: ENV, workdir: path.join(tmp, 'wd5'), json: out,
+    });
+    expect(r.status).toBe('pass');
+    expect(fs.existsSync(out)).toBe(true);
+    const art = JSON.parse(fs.readFileSync(out, 'utf8'));
+    expect(art.status).toBe('pass');
+    expect(art.pinnedCount).toBe(1);
+    expect(art.measured).toHaveLength(1);
+    // The MEASUREMENT, not a verdict: a real height, agreeing with the returned result.
+    expect(art.measured[0].measured).toBeCloseTo(r.measured[0].measured, 2);
+    expect(art.measured[0].measured).toBeGreaterThan(40);
+    expect(art.measured[0].estimate).toBeCloseTo(r.measured[0].estimate, 2);
+    expect(art.measured[0].driftBy).toBeCloseTo(r.measured[0].driftBy, 2);
+    expect(art.measured[0].fits).toBe(true);
+    expect(art.usable).toBeCloseTo(r.usable, 2);
   }, 300000);
 
   // THE CASE THE CHECK EXISTS FOR. A box the filter correctly left breakable is pinned by
