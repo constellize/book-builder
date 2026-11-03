@@ -234,6 +234,43 @@ local function readPinBudget(meta)
   end
   PIN_BUDGET = n
 end
+
+-- The promptref titles this book pins, from book.config.js via --metadata.
+--
+-- A promptref's tail is a `Link:` line and its footnote, degenerate by construction, so when
+-- one splits there the next page opens on a rule and a bare URL (round 7, p215). Pinning
+-- EVERY promptref closed that and cost 16 pages, most of them out of chapter 4. These are the
+-- ones that actually orphan; see the note in book.config.js for how the list was arrived at
+-- and why it has to be re-derived when the text moves.
+PIN_TITLES = {}
+PIN_TITLES_SEEN = {}
+
+local function readPinTitles(meta)
+  local declared = meta and meta['callout-pin-titles']
+  if declared == nil then return end
+  for title in (pandoc.utils.stringify(declared) .. ';'):gmatch('(.-);') do
+    title = title:gsub('^%s*(.-)%s*$', '%1')
+    if title ~= '' then PIN_TITLES[title] = true end
+  end
+end
+
+-- Announce any title that matched no callout. A list that silently matches nothing is the
+-- failure this whole round kept hitting: a guard that reports success while measuring nothing.
+-- Written to stderr rather than raised, because a stale entry must not stop a build -- but it
+-- must not pass unseen either, since the boxes it was holding are now unpinned.
+local function reportUnmatchedPinTitles()
+  local missing = {}
+  for title in pairs(PIN_TITLES) do
+    if not PIN_TITLES_SEEN[title] then missing[#missing + 1] = title end
+  end
+  if #missing > 0 then
+    table.sort(missing)
+    io.stderr:write('callout-filter-print: ' .. #missing .. ' calloutPinTitles entr(y/ies) ' ..
+      'matched no callout in this book, so nothing was pinned for them. Check book.config.js ' ..
+      'against the manuscript:\n')
+    for _, t in ipairs(missing) do io.stderr:write('  - ' .. t .. '\n') end
+  end
+end
 -- ============================================================================
 
 local function charcount(s)
@@ -768,12 +805,13 @@ function generatePromptRefCallout(content, elem)
     extra = extra + FIT.em * 0.3                                    -- \vspace{0.3em}
   end
   local fits, estimate = calloutFitsOnePage(content, { title = promptName, extra_height = extra })
-  -- A promptref needs no tail TEST: it ends in a `Link:` line and its footnote by
-  -- construction, and that tail is degenerate -- four of the five class-2 instances round 8
-  -- set out to fix were promptrefs whose footnote was orphaned overleaf, round 7's p215
-  -- opening on nothing but a rule and a bare URL. So promptrefs pin on fit alone, and the
-  -- narrower tail rule below applies to the boxes whose tail is not known in advance.
-  local pinned = fits
+  -- A promptref's tail is a `Link:` line and its footnote, degenerate by construction, so the
+  -- tail test below cannot tell one promptref from another -- it would pin all 66. Pin the
+  -- named ones instead: the five that actually orphan. See readPinTitles() and the note in
+  -- book.config.js. With no list declared this is every promptref that fits, which is the
+  -- round-8-first-pass behaviour and costs 16 pages.
+  if PIN_TITLES[promptName] then PIN_TITLES_SEEN[promptName] = true end
+  local pinned = fits and (next(PIN_TITLES) == nil or PIN_TITLES[promptName] == true)
 
   local latex = emitFitProvenance('promptref', pinned, estimate, promptName, fits) .. '\n' .. string.format([[
 \begin{tcolorbox}[
@@ -1087,6 +1125,61 @@ function Div(elem)
   end
 end
 
+-- THE LEAD-IN RESERVATION, resized to the box it is holding space for.
+--
+-- keep-leadin-with-content.lua puts `\needspaceNow{9\baselineskip}` in front of a lead-in
+-- that introduces a callout. Nine baselines is right for a box that can SPLIT: enough to
+-- start it, the rest flows over. It is wrong for a pinned box, which needs its whole height
+-- or it moves -- and when it moves, the lead-in has already been placed on those nine lines
+-- and is left at the page foot alone. That is "Essential steps:" (p.95), "Key
+-- implementations:" (p.101) and "Managing knowledge evolution:" (p.144): three class-4
+-- faults round 7 did not have, created by pinning to take class 2 from 5 to 0.
+--
+-- THAT FILTER CANNOT FIX IT ITSELF. It runs BEFORE this one (pandoc-defaults-print.yaml),
+-- deliberately, so that lead-ins inside a callout are still reachable as blocks; at that
+-- point the callout is a Div and no height exists. This filter is where the height is known,
+-- so this is where the reservation is corrected -- after Div handlers have run, the box is a
+-- RawBlock carrying its own `%%CALLOUTFIT ... pinned=1 est=NNN` provenance.
+--
+-- Only ENLARGES. A box shorter than the nine lines already reserved keeps the nine, so this
+-- can never reserve less than before and never makes an existing break worse.
+local RESERVED_NINE_PT = FIT.text_line * 9
+
+local function pinned_estimate(blk)
+  if not (blk and blk.t == 'RawBlock'
+          and (blk.format == 'latex' or blk.format == 'tex')) then return nil end
+  local prov = blk.text:match('%%%%CALLOUTFIT[^\n]*')
+  if not prov or not prov:match('pinned=1') then return nil end
+  return tonumber(prov:match('est=([%d%.]+)'))
+end
+
+local function is_reservation(blk)
+  return blk and blk.t == 'RawBlock' and blk.text:match('needspace')
+     and blk.text:match('{%d+\\baselineskip}')
+end
+
+function Blocks(blocks)
+  for i = 2, #blocks do
+    local est = pinned_estimate(blocks[i])
+    if est and est > RESERVED_NINE_PT then
+      -- Look back past the lead-in for the reservation. Two blocks is the shape the sibling
+      -- filter emits (reservation, lead-in paragraph, box); one covers a pipeline that drops
+      -- the paragraph. Anything further back belongs to different content and is left alone.
+      for back = 1, 2 do
+        local res = blocks[i - back]
+        if is_reservation(res) then
+          -- +1 baseline for the lead-in itself, which sits BELOW this reservation and so is
+          -- not part of the box's measured height.
+          res.text = res.text:gsub('{%d+\\baselineskip}',
+            string.format('{\\dimexpr %.2fpt + \\baselineskip\\relax}', est))
+          break
+        end
+      end
+    end
+  end
+  return blocks
+end
+
 -- Return the filter.
 --
 -- TWO PASSES, IN THIS ORDER. A single filter set walks blocks BEFORE Meta, so reading the
@@ -1096,9 +1189,19 @@ end
 -- can see document metadata.
 return {
   {
-    Meta = function(meta) readPinBudget(meta) end
+    Meta = function(meta) readPinBudget(meta); readPinTitles(meta) end
   },
   {
-    Div = Div
+    Div = Div,
+    -- Same set as Div on purpose: pandoc applies a block list's handler AFTER its children,
+    -- so by the time Blocks sees the list every callout Div in it is already the RawBlock
+    -- whose provenance Blocks reads. A third pass would also work and costs another walk.
+    Blocks = Blocks
+  },
+  {
+    -- A THIRD pass, only to report. Filter sets run in sequence over the whole document, so
+    -- by the time this one starts every callout has been seen and PIN_TITLES_SEEN is final.
+    -- Doing it inside the set above would report on a partly walked document.
+    Pandoc = function(doc) reportUnmatchedPinTitles(); return doc end
   }
 }

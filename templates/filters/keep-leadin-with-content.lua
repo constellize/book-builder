@@ -60,9 +60,14 @@ local function reservation_for(nxt)
   -- left the lead-in behind -- which kept "For Stale Memory Banks...:" stranded on p.146
   -- after the Header and Figure cases were handled.
   --
-  -- It arrives here as a RawBlock, not a Div: callout-filter-print.lua has already turned
-  -- it into LaTeX by the time this filter runs. Probing with `-t native` shows a Div and is
-  -- misleading, because that filter only converts when the target is LaTeX.
+  -- It arrives here as a DIV, not a RawBlock. This comment said the opposite until round 8
+  -- and the opposite is false: pandoc-defaults-print.yaml:38-39 runs this filter BEFORE
+  -- callout-filter-print.lua, on purpose, so that lead-ins inside a callout are still
+  -- reachable. The RawBlock branch below is the fallback for a pipeline that orders them the
+  -- other way round; on the book's own print path only the Div branch is ever taken. Check
+  -- the defaults file before trusting either branch -- the wrong version of this comment sent
+  -- two separate attempts at the pinned-box reservation into dead code. See the note on
+  -- Blocks() below.
   if nxt.t == 'Div' then return 9 end
   if nxt.t == 'RawBlock' and nxt.format == 'latex'
      and nxt.text:match('\\begin%s*{') then return 9 end
@@ -144,6 +149,31 @@ local function reserve(amount)
       .. '\\else\\needspace' .. amount .. '\\fi'
 end
 
+--[[
+  NOT FIXED, and the reason is recorded here because it cost a round to find twice.
+
+  A lead-in before a PINNED callout still strands: "Essential steps:" (p.95), "Key
+  implementations:" (p.101), "Managing knowledge evolution:" (p.144). Nine baselines is the
+  right reservation for a box that can SPLIT -- enough to start it, the rest flows over -- and
+  the wrong one for a box that cannot. A pinned box needs its whole height; when it does not
+  get it the box moves and the lead-in, already placed on its nine reserved lines, is left at
+  the foot. Round 7 had none of these because nothing was pinned then. They are the cost of
+  fixing class 2, and they are real: class 4 went from 2 true instances to 5.
+
+  The obvious fix -- reserve the box's own height instead of nine lines -- CANNOT BE WRITTEN
+  HERE. The height exists: callout-filter-print.lua writes it into the stream as
+  `%%CALLOUTFIT ... pinned=1 est=355.76 ...`. But that filter runs AFTER this one
+  (pandoc-defaults-print.yaml:38-39, deliberately, so lead-ins inside callouts are still
+  reachable as blocks), so when this filter looks at the next block it is a Div and no
+  estimate exists yet. A `pinned_box_height()` reading that comment was written, measured and
+  deleted: it is unreachable on the only pipeline that loads this filter.
+
+  Where the fix belongs is callout-filter-print.lua, which knows the height at the moment it
+  pins: in its Blocks handler, rewrite the preceding `\needspace...{9\baselineskip}` this
+  filter emitted to the box's measured height. That is a change to the other filter, not this
+  one, and it was not taken in round 8.
+--]]
+
 function Blocks(blocks)
   local out = pandoc.List()
   for i, blk in ipairs(blocks) do
@@ -179,7 +209,18 @@ function Blocks(blocks)
           out:insert(pandoc.RawBlock('latex',
             '\\ifdefined\\FloatBarrier\\FloatBarrier\\fi' .. reserve(amount)))
         else
-          out:insert(pandoc.RawBlock('latex', '\\needspace' .. amount))
+          -- EAGER here too, since round 8's second pass. This was the lazy \needspace, and
+          -- while heading reservations were in force that was enough: a lead-in that lost its
+          -- deferred break usually found one at the heading above. With those reservations
+          -- gone (see \headingReserve in book-print.latex) the lazy form stopped holding, and
+          -- "Essential steps:", "Key implementations:" and "Managing knowledge evolution:"
+          -- each ended a page alone -- the publisher's class 4, 2 real instances -> 5.
+          --
+          -- Lazy means TeX may decline the break and keep the stretch glue; eager decides at
+          -- the reservation. The trade is the one measured for tables and callouts above, now
+          -- applied to the plain case: it can force a slightly shorter page rather than strand
+          -- the lead-in, which is the way round this fault is meant to fall.
+          out:insert(pandoc.RawBlock('latex', reserve(amount)))
         end
       end
     end

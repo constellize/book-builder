@@ -374,6 +374,38 @@ module.exports = {
   },
 
   // Callout system configuration
+  // WHICH CALLOUTS GET PINNED (print only), by promptref title.
+  //
+  // A pinned callout cannot split, so it never sheds a tail -- and never fits where it does
+  // not fit, so it moves and leaves a hole. Round 8 first pinned every promptref that fitted
+  // a page. Measured against the round-7 build that cost 16 pages and wrecked the one chapter
+  // that is dense with them: chapter 4 went 17 -> 21 pages, mean fill 80.9% -> 64.2%, and its
+  // pages under half full went 2 -> 10. It is the most callout-heavy chapter in the book (33,
+  // against 22 for the next), so it paid most of the bill for a fault that occurs five times.
+  //
+  // So pin the five that actually orphan, not the class. These are the boxes the detector
+  // caught shedding their `Link:` line and footnote onto the next page with nothing else --
+  // round 7's p215 opened on a rule and a bare URL. Titles, not indices: an index moves when
+  // anything above it is edited, and a title is reviewable by a human.
+  //
+  // THIS LIST IS PAGINATION-DEPENDENT. Pinning changes where pages break, which can expose a
+  // different box. It was iterated to a fixed point: build, read `2_orphan_tail` from
+  // scripts/detect-typeset-faults.py, add the box it names, rebuild until the class is empty.
+  // Re-run that loop after any edit that moves a lot of text, and do not assume a box can be
+  // removed from this list because the current build looks clean -- it looks clean BECAUSE of
+  // the list. An entry whose title no longer exists is reported by the build, not ignored.
+  calloutPinTitles: [
+    'Design Actionable Health Reporting',
+    'Build Container Reliability With Clean Builds, Predictable Starts, And Graceful Shutdowns',
+    'Ensure Architectural Consistency By Following Established Patterns',
+    'Revise Memory Bank',
+    'Evolve Requirements from Implementation',
+    // Iteration 2: not an orphan until the five above were pinned. Pinning moved the pages
+    // under it and this box landed across a break. This is the pagination dependence the note
+    // above warns about, caught by rebuilding rather than by reasoning.
+    'Recover from Noise Accumulation',
+  ],
+
   callouts: {
     codeReference: {
       icon: "📁",

@@ -1183,8 +1183,37 @@ class BookBuilder {
       declaredPinBudget = readCalloutPinBudget(
         await fs.readFile(templatePath, 'utf8').catch(() => '')
       );
+      // The titles to pin are the BOOK's, not the template's: which boxes orphan depends on
+      // this manuscript's pagination, while the template describes a page geometry. Carried
+      // the same way as the budget, and only alongside it -- with no budget nothing pins, so
+      // a list without one would silently do nothing. `;` separates, because titles contain
+      // commas; a title containing `;` is rejected here rather than splitting into two names
+      // that match nothing.
+      // QUOTED, and validated before quoting. pandocArgs is joined into a string and run
+      // through a shell, so an unquoted title containing spaces splits into several arguments
+      // -- and one containing `;` ENDS THE COMMAND and runs the rest. The first version of
+      // this did exactly that: pandoc was handed "Actionable" as an input file and /bin/sh
+      // tried to run `Build`, `Ensure`, `Revise` and `Evolve` as commands. The build failed,
+      // which is the only reason it was noticed.
+      //
+      // So: reject every shell metacharacter that could survive double quotes, rather than
+      // trying to escape them. These are human-written prompt titles; none needs such a
+      // character, and a build that stops is better than a title silently cut in half.
+      const pinTitles = Array.isArray(config.calloutPinTitles) ? config.calloutPinTitles : [];
+      const malformed = pinTitles.filter(
+        (t) => typeof t !== 'string' || !t.trim() || /[;"$`\\\n\r]/.test(t));
+      if (malformed.length) {
+        throw new Error(
+          `book.config.js calloutPinTitles: ${malformed.length} unusable entr(y/ies). A title ` +
+          `must be a non-empty string containing none of ; " $ \` \\ or a newline -- ';' ` +
+          `separates them on the way to the filter and the rest are shell metacharacters. ` +
+          `Offending: ${JSON.stringify(malformed)}`);
+      }
       if (declaredPinBudget !== null) {
         pandocArgs.push(`--metadata=callout-pin-budget:${declaredPinBudget}`);
+        if (pinTitles.length) {
+          pandocArgs.push(`--metadata="callout-pin-titles:${pinTitles.join(';')}"`);
+        }
         if (this.options.verbose) {
           console.log(chalk.gray(
             `Callout pin budget: ${declaredPinBudget}pt (declared by ${path.basename(templatePath)})`));
