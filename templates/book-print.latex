@@ -378,6 +378,40 @@ $endif$
 \displaywidowpenalty=10000
 \brokenpenalty=10000
 
+% ---------------------------------------------------------------------------------------
+% VERTICAL JUSTIFICATION: \raggedbottom, not the class's \flushbottom.
+%
+% `book` with `twoside` leaves \flushbottom in force (book.cls only calls \raggedbottom for
+% oneside), so every page is stretched to the full text block and the slack is pushed into
+% whatever glue exists on the page.
+%
+% THE PROBLEM THAT IS, with pinned callouts. Since round 8 a callout that fits a page is set
+% `breakable=false`, so the next legal breakpoint after a lead-in can be a whole unbreakable
+% box away. The page's slack is then stretched into the gap BETWEEN a lead-in and the box it
+% introduces -- ~115pt of white between "Critical considerations:" and its box on p.117 of the
+% round-8 build -- rather than collecting at the page foot where a reader reads it as a short
+% page. The build logged 84 `Underfull \vbox ... while \output is active`, which is that
+% stretching, every one of them a page pulled apart to reach the bottom margin.
+%
+% \raggedbottom lets the page end short and puts the slack at the foot. Measured on this
+% 267-page book: page count unchanged, `Underfull \vbox` 84 -> 0, `Overfull \vbox` 0 -> 0,
+% and no change to the detected fault classes.
+%
+% IT IS A HOUSE-STYLE DECISION, taken by the book's owner for this book: six body-text pages
+% were filling to 15-40% because the slack was going into mid-page gaps. A trade book is
+% normally set flush bottom; it is ragged bottom here because the pinned boxes make flush
+% bottom lie about where the white space is.
+%
+% Placed BEFORE the header-includes block on purpose: book-builder is shared, and a consuming
+% book that wants flush bottom back can say `\flushbottom` in its own header-includes and win.
+%
+% (That block is NOT named here with its pandoc variable syntax, deliberately. pandoc expands
+% template variables BEFORE LaTeX sees the percent signs, so writing one inside a comment
+% pastes its whole value onto a commented line and leaks every line after the first into the
+% document. Doing it here produced `You can't use \spacefactor in vertical mode` from the
+% subcaption guard and a build with no pages. The copyright-page comment further down says
+% the same thing; believe it.)
+\raggedbottom
 
 \usepackage{titlesec}
 \usepackage{fancyhdr}

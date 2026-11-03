@@ -522,6 +522,58 @@ Three things about that barrier:
   "For Stale Memory Banks ...:" sat at the foot of p.156 with Figure 5.4 and its callout
   overleaf.
 
+### `\raggedbottom` in `book-print.latex` (round 8, final wave)
+
+`book` + `twoside` leaves `\flushbottom` in force, so every page is stretched to the bottom
+margin and the slack goes into whatever glue the page happens to have. With pinned callouts
+that glue is usually the space between a **lead-in and the box it introduces**: p.117 of the
+round-8 build set "Critical considerations:" alone in the middle of the page with ~115pt of
+white above it and ~115pt below, disconnected from its own box. The build logged 84
+`Underfull \vbox ... while \output is active`, one per page TeX could not fill.
+
+Shipped 2026-11-02 at the owner's decision. **Measured over the whole book, before vs after:**
+
+| | flushbottom | raggedbottom |
+| --- | --- | --- |
+| pages | 267 | **267** (no page cost) |
+| `Underfull \vbox` | 84 | **0** |
+| `Overfull \vbox` | 0 | 0 |
+| `Overfull \hbox` | 3 | 3 |
+| `Underfull \hbox` | 120 | 120 |
+| detected faults (§1–§5) | 0/0/0/3/0 | 0/0/0/3/0 |
+| pages whose body-line count changed | — | **0** |
+| pages whose largest inter-line gap shrank | — | **152 of 267** |
+| pages whose largest inter-line gap grew | — | **0** |
+| sum of largest inter-line gaps | 18,348pt | 15,957pt |
+
+**What it does and does not do.** It reflows nothing: not one page gained or lost a line, and
+the sparse-page distribution is unchanged (106 pages under 20 body lines, median 23). It moves
+white space **from between lines to the page foot**. A short page stays short — that is the
+pinning's page arithmetic and no vertical-justification setting can change it — but it now
+reads as a page that ended early rather than as loose type. p.117's gap went 129.9pt → 13.1pt;
+p.84's 200.7 → 13.1; p.228's 467.5 → 243.8.
+
+**Three of the six pages the owner named were already as tight as they could be** (p83, p203,
+p209 are byte-identical before and after): they had no stretchable glue for `\flushbottom` to
+pull on, which is precisely why TeX was reporting them underfull. The other three improved
+(p148 8.1→4.8pt, p158 36.4→15.1pt, p91 30.3→16.8pt).
+
+It is placed before the `header-includes` block, so a consuming book can put `\flushbottom`
+back in its own header-includes and win.
+
+**A TRAP RE-DISCOVERED WHILE SHIPPING IT.** The explanatory comment originally named the
+header-includes block using pandoc's variable syntax. **pandoc expands template variables
+before LaTeX sees the percent signs**, so the whole header-includes block was pasted onto a
+commented line and everything after its first line leaked into the preamble; the build died
+with `You can't use \spacefactor in vertical mode` and no pages. The copyright-page comment
+further down `book-print.latex` already said this. A pandoc template has no safe way to write
+a variable name inside a comment: don't.
+
+That failure also exposed a gap in the pre-flight fit check, now closed: under `nonstopmode`
+the probe measured on past the preamble error and reported all 123 boxes fitting, against a
+preamble the real build refused. The check now reports NOT CHECKED when its own xelatex run
+logs a TeX error, because its heights then describe a document that will not be built.
+
 **EVERY reservation in front of a pinned box must be EAGER.** `\needspace` is lazy: it lays down
 `\vskip 0pt plus N\baselineskip` and a −100 penalty and lets TeX choose later. That stretch is
 what makes a nearly empty page look cheap, and an unbreakable box makes it visible, because
