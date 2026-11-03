@@ -307,6 +307,24 @@ measuring('measuring real boxes', () => {
     expect(excerpt(r.failures[0].source)).toContain('k0');
   }, 300000);
 
+  // Found the hard way: a pandoc template variable written inside a LaTeX comment in
+  // book-print.latex pasted the header-includes block into the preamble. Under nonstopmode
+  // that errored and carried on, so the probe measured 123 boxes and reported them all
+  // fitting -- against a preamble the real build (`-halt-on-error`) refused outright.
+  test('a TeX error in the probe is NOT CHECKED, not a pass over the wrong preamble', () => {
+    const texPath = printTex(`${codeCallout(8)}\n`, tmp);
+    const broken = fs.readFileSync(texPath, 'utf8')
+      .replace(/^[ \t]*\\begin\{document\}/m, '\\@ifpackageloaded{subcaption}{}{}\n\\begin{document}');
+    const f = path.join(tmp, 'broken-preamble.tex');
+    fs.writeFileSync(f, broken);
+    const r = checkPinnedCallouts({
+      tex: f, quiet: true, cwd: BOOK_ROOT, env: ENV, workdir: path.join(tmp, 'wd4'),
+    });
+    expect(r.status).toBe('not-checked');
+    expect(r.status).not.toBe('pass');
+    expect(r.reason).toMatch(/TeX error/);
+  }, 300000);
+
   // Estimator drift: the box still fits, but the estimate it was pinned on was LOW. That is
   // a FIT-constant bug and the direction that ends in a hang, so it is reported even though
   // the build is allowed to continue.

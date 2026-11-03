@@ -385,7 +385,29 @@ function checkPinnedCallouts(options) {
       failures: [], drift: [], callouts, workdir,
     };
   }
-  const { heights, geometry } = parseMeasurements(fs.readFileSync(logPath, 'latin1'));
+  const probeLog = fs.readFileSync(logPath, 'latin1');
+  const { heights, geometry } = parseMeasurements(probeLog);
+
+  // A TeX ERROR IN THE PROBE MEANS THE PROBE IS NOT THIS BOOK'S PREAMBLE, so its heights
+  // describe a document the real build will not produce, and a green result over them would
+  // be exactly the "clean pass over something not measured" this check is built to avoid.
+  //
+  // It is reported as NOT CHECKED rather than as a fit failure: the fault is in the preamble,
+  // not in a box, and the real xelatex run is about to fail on it with `-halt-on-error` and a
+  // better message. Found the hard way -- a pandoc template variable written inside a LaTeX
+  // comment in book-print.latex pasted the header-includes block into the preamble, which
+  // errored under nonstopmode ("You can't use \spacefactor in vertical mode") while the probe
+  // measured on regardless and reported 123 boxes fitting.
+  const texErrors = (probeLog.match(/^! .*$/gm) || []);
+  if (texErrors.length > 0) {
+    return {
+      status: 'not-checked',
+      reason: `the fit probe's own xelatex run logged ${texErrors.length} TeX error(s), so its ` +
+        `preamble is not the one the book will be built with -- fix those first. ` +
+        `First: ${texErrors[0].trim()} (full log: ${logPath})`,
+      failures: [], drift: [], callouts, workdir, logPath,
+    };
+  }
 
   if (!geometry) {
     return {
