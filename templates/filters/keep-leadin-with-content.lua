@@ -34,10 +34,67 @@ local function last_string(inlines)
   return nil
 end
 
+-- HOW MANY LINES THE LEAD-IN ITSELF WILL OCCUPY.
+--
+-- Every number in reservation_for() below was tuned against a ONE-LINE lead-in, and the
+-- reservation is emitted BEFORE the lead-in, so it has to cover the lead-in *and* what
+-- follows out of the same budget. A two-line lead-in therefore silently spends one of the
+-- lines meant for the content: "These sketches help us think through:" is two lines, so its
+-- 6-line list reservation left 4 for \topsep plus a bullet, the bullets did not fit, and the
+-- lead-in sat alone at the foot of p.87 -- the publisher's class 4, in a chapter round 8
+-- never touched. Round 7 had the same bug at p.161 ("other platform components:").
+--
+-- 70 characters per line is the full-measure body text figure, NOT the callout filter's
+-- FIT.text_chars (50), which describes the narrower measure inside a box. Measured lines on
+-- the 6x9 build run 66-75 characters depending on justification; 70 sits in the middle.
+--
+-- ERRING HIGH IS THE CORRECT DIRECTION HERE, and it is the opposite of the choice made for
+-- the callout reservation in callout-filter-print.lua. There, over-reserving costs blank
+-- paper and nothing else. Here, UNDER-reserving strands a lead-in, which is a fault the
+-- publisher has named in two consecutive rounds. A line of whitespace is cheaper than that.
+local BODY_CHARS = 70
+
+local function leadin_lines(blk)
+  local ok, text = pcall(pandoc.utils.stringify, blk)
+  if not ok or type(text) ~= 'string' or text == '' then return 1 end
+  local n = (utf8 and utf8.len and utf8.len(text)) or #text
+  return math.max(1, math.ceil(n / BODY_CHARS))
+end
+
+-- A LEAD-IN THAT IS ITSELF A BOX.
+--
+-- `::: info` holding one colon-ending sentence, immediately followed by `::: code`, is a
+-- lead-in whose content is in the NEXT box. Blocks() below cannot see it: the sentence is a
+-- Para inside a Div, so its `nxt` sibling within that Div is nil, and at the outer level the
+-- block is a Div rather than a colon-ending Para. Nothing matched, no reservation was
+-- emitted, and "...connect with other platform components:" ended a page alone in round 7
+-- (p.161) and again in round 8 (p.159) -- the one instance of the publisher's class 4 that
+-- survived a whole round untouched because no rule was looking at it.
+--
+-- Two instances in this book, both in ch6. Fixed here rather than by unwrapping them in the
+-- manuscript, so the shape stays available to the author and the next reflow cannot
+-- reintroduce it.
 local function ends_with_colon(blk)
   if blk.t ~= 'Para' and blk.t ~= 'Plain' then return false end
   local text = last_string(blk.content)
   return text ~= nil and text:sub(-1) == ':'
+end
+
+-- Declared AFTER ends_with_colon on purpose: a `local function` is not in scope inside a
+-- function defined above it, so calling it from there would silently resolve to a nil global.
+local function leadin_box(blk)
+  if blk.t ~= 'Div' then return nil end
+  local inner = nil
+  for _, b in ipairs(blk.content or {}) do
+    if b.t == 'Para' or b.t == 'Plain' then
+      if inner then return nil end                 -- more than one paragraph: a real box
+      inner = b
+    elseif b.t ~= 'Null' then
+      return nil                                   -- holds anything else: a real box
+    end
+  end
+  if inner and ends_with_colon(inner) then return inner end
+  return nil
 end
 
 -- How much to reserve depends on what follows:
@@ -178,18 +235,70 @@ function Blocks(blocks)
   local out = pandoc.List()
   for i, blk in ipairs(blocks) do
     local nxt = blocks[i + 1]
-    -- Skip the reservation when a heading sits immediately before: titlesec already reserved
-    -- space for that heading, and asking again here CHAINS the two. That is what left
-    -- headings alone at the foot of a page with a large gap below -- the heading placed on
-    -- its 7 reserved lines, then the lead-in demanded 8 more for its list, did not get them,
-    -- and took the whole paragraph to the next page. p.130 was 12% full because of this.
+    -- A lead-in sitting immediately under a heading gets NO reservation of its own, and the
+    -- reason changed in round 8. It used to be chaining: titlesec reserved space for the
+    -- heading, the lead-in asked again, and the heading was left alone above a large gap
+    -- (p.130 was 12% full). Those heading reservations are now off -- book-print.latex
+    -- defines \sectionbreak and friends as empty -- so chaining can no longer happen.
+    --
+    -- The guard stays because the other hazard is worse and does NOT depend on that switch:
+    -- this reservation is emitted AFTER the heading, so when it forces a break the heading
+    -- stays behind on the old page by itself. That is the publisher's class 3, the stranded
+    -- "Day 1: Create Your First Memory Bank" on p.237 of round 7 -- trading class 4 for a
+    -- fault they complained about more loudly.
+    --
+    -- MOVING THE RESERVATION ABOVE THE HEADING WAS TRIED, MEASURED AND REJECTED. Do not
+    -- rebuild it without reading this.
+    --
+    -- The shape it targets is real: "3.4.1 Planning Implementation Approaches" / "These
+    -- sketches help us think through:" / bulleted list left the lead-in alone at the foot of
+    -- p.89, and it is the one shape no other rule here can reach, because this guard
+    -- suppresses the reservation and the lead-in has nothing in front of it to push.
+    --
+    -- The implementation worked exactly as intended -- reserve heading skip + heading lines +
+    -- lead-in lines + content from ABOVE the heading, eager, at the fourteen sites in the
+    -- manuscript where a heading is directly followed by a colon lead-in. p.89 closed, class
+    -- 4 went to 2 (both detector false positives), and it cost no pages at all.
+    --
+    -- It was still reverted, because of what the reflow did two chapters away: ch6 moved far
+    -- enough that the promptref box on p.177 ended flush with the page foot and its footnote
+    -- URL was left alone at the head of p.178. That is class 2, and class 2 is the shape the
+    -- publisher named FIRST -- a stranded prompt-reference URL on p.215 of round 7. Trading a
+    -- lead-in strand they never flagged for a detached footnote they did is a worse book and
+    -- a worse answer to their review, at one genuine fault either way.
+    --
+    -- Narrowing the reservation did not help: it double-counted the lead-in line (see the
+    -- bare-lead-in branch, which spends (leadin_lines - 1) for the same reason), and
+    -- correcting that to drop a baseline left p.178 exactly where it was.
+    --
+    -- The p.178 fault itself cannot be fixed from this filter. It needs the box's last line
+    -- kept away from the page foot, and the only levers are reserving the whole box height
+    -- before every promptref box -- which stops breakable boxes splitting, i.e. pins them,
+    -- i.e. walks back into the 123-pinned sparse-page cliff -- or making the footnote part of
+    -- the box content, which is a design change to callout-filter-print.lua.
     local after_heading = i > 1 and blocks[i - 1].t == 'Header'
-    if nxt and not after_heading and ends_with_colon(blk) then
+    -- A one-sentence `::: info` introducing the box that follows it. The reservation has to
+    -- cover the INFO BOX ITSELF -- its own lines plus frame and padding -- on top of what the
+    -- following box needs, because the whole point is that the two are placed together.
+    -- 50 characters per line, not BODY_CHARS: this text is inside a box, at the narrower
+    -- measure the callout filter calls FIT.text_chars. Plus 2 for the frame and padding.
+    local box_leadin = (not after_heading) and nxt and leadin_box(blk) or nil
+    if box_leadin and callout_follows(nxt) then
+      local text = pandoc.utils.stringify(box_leadin)
+      local n = (utf8 and utf8.len and utf8.len(text)) or #text
+      local own = math.max(1, math.ceil(n / 50)) + 2
+      out:insert(pandoc.RawBlock('latex',
+        '\\ifdefined\\FloatBarrier\\FloatBarrier\\fi'
+        .. reserve('{' .. (9 + own) .. '\\baselineskip}')))
+    elseif nxt and not after_heading and ends_with_colon(blk) then
       local is_table = starts_with_table(nxt)
       -- A table, bare or behind a wrapper, reserves 10 lines. reservation_for would answer 9
       -- for a Div (the callout figure) and 5 for a raw block.
       local n = is_table and 10 or reservation_for(nxt)
       if n then
+        -- Pay for the lead-in's own lines on top of the tuned figure, which assumed one.
+        -- See leadin_lines() for the p.87 / p.161 strands this closes.
+        n = n + (leadin_lines(blk) - 1)
         local amount = '{' .. n .. '\\baselineskip}'
         if is_table then
           -- A table needs the EAGER form. \needspace is lazy, and in front of a longtable

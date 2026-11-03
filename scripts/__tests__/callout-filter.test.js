@@ -175,7 +175,7 @@ maybe('callout filter: float barriers', () => {
     // 8's second pass it is left breakable. What this test guards is the BLOCK STRUCTURE, not
     // the pin decision -- the barrier and the provenance comment riding in the same block.
     expect(blocks[0]).toMatch(
-      /^RawBlock\|.*\\FloatBarrier.*%%CALLOUTFIT type=info pinned=0 .*\\begin\{tcolorbox\}/);
+      /^RawBlock\|.*\\FloatBarrier.*%%CALLOUTFIT[^\n]*?type=info[^\n]*?pinned=0 .*\\begin\{tcolorbox\}/);
   });
 });
 
@@ -203,7 +203,7 @@ maybe('callout filter: a callout that fits does not split', () => {
     const tex = pandocToLatex(shellCallout());
     // It fits -- so the only thing leaving it breakable is the absence of a strandable tail.
     // Asserting both together is what stops this passing because the box became unmeasurable.
-    expect(tex).toMatch(/%%CALLOUTFIT type=code pinned=0 est=\d+\.\d+ .*fits=1/);
+    expect(tex).toMatch(/%%CALLOUTFIT[^\n]*?type=code[^\n]*?pinned=0 est=\d+\.\d+ .*fits=1/);
     expect(tex).not.toMatch(/breakable=false/);
   });
 
@@ -289,7 +289,7 @@ maybe('callout filter: a callout that fits does not split', () => {
     // out breakable, so the old assertion would now pass for exactly the wrong reason.
     const hard = Array.from({ length: 4 }, (_, i) => `line number ${i} here  `).join('\n');
     const tex = pandocToLatex(`::: info\n${hard}\n:::\n`);
-    expect(tex).toMatch(/%%CALLOUTFIT type=info pinned=0 est=\d+\.\d+ .*fits=1/);
+    expect(tex).toMatch(/%%CALLOUTFIT[^\n]*?type=info[^\n]*?pinned=0 est=\d+\.\d+ .*fits=1/);
   });
 
   test('a callout containing only an image is not pinned as zero-height', () => {
