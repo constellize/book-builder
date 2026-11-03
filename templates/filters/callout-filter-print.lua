@@ -113,10 +113,26 @@ end
 -- typesets; 36 (~558pt) never terminates. So the estimate below must never be allowed to
 -- run high, and anything it cannot measure confidently is left breakable.
 --
--- All constants are in TeX points, measured against this template at the 6x9 trim. The
--- derivation is recorded in book-builder/memory-bank/systemPatterns.md; keep the two in step.
+-- THE GEOMETRY THESE NUMBERS DESCRIBE. Every constant below is in TeX points and was
+-- measured against ONE page geometry:
+--
+--     trim 6x9in        \usepackage[paperwidth=6in,paperheight=9in,
+--     margins            inner=0.75in,outer=0.5in,top=0.75in,bottom=0.75in]{geometry}
+--     \textheight       542.03pt
+--     body              11pt at linestretch 1.2
+--     code              \setminted{fontsize=\small}
+--
+-- book-builder is SHARED. A consuming book that uses these print defaults with its own
+-- template -- A5, 10pt, tighter leading -- has a different text block, and none of these
+-- numbers describes it. Pinning a box against a 433pt budget on a shorter page does not
+-- warn and does not overfull: it HANGS xelatex (see THE CLIFF above). So pinning is
+-- OPT-IN, declared by the template; see PIN_BUDGET below. The filter never reads
+-- \textheight itself -- a Lua filter runs before TeX exists.
+--
+-- The derivation of each constant is recorded in book-builder/memory-bank/systemPatterns.md
+-- and re-derivable with scripts/__tests__/fixtures/fit-probe.tex; keep all three in step.
 local FIT = {
-  text_block  = 542.03, -- \textheight: 9in paper less 0.75in top and bottom
+  text_block  = 542.03, -- \textheight of the CALIBRATED geometry above (not of this build)
   fraction    = 0.80,   -- of the text block a pinned box may claim. The missing 20% covers
                         -- estimation error, because overrunning does not cost a warning --
                         -- it costs the build. The tallest box this book pins measures 429pt.
@@ -142,11 +158,54 @@ local FIT = {
 
   em          = 11.00,  -- 1em of the body font, for the \vspace the promptref box adds
 }
-FIT.budget = FIT.fraction * FIT.text_block -- 433.6pt
+FIT.calibrated_budget = FIT.fraction * FIT.text_block -- 433.6pt
 --
 -- Budget in whole lines, for reading the numbers above against a page:
 --   a code callout  (433.6 - 34 - 6.3) / 14.40 = 27 rendered lines
 --   a text callout  (433.6 - 34)       / 16.32 = 24 rendered lines
+--
+-- PIN_BUDGET: the tallest estimate that may be pinned, in points, or nil for "pin nothing".
+--
+-- It is OFF until the TEMPLATE declares it. book-print.latex defines
+-- `\newcommand{\calloutPinBudget}{433.6}`; build-book.js reads that definition out of
+-- whatever template book.config.js names for the target and forwards the number to pandoc as
+-- `--metadata=callout-pin-budget:433.6`, which the Meta pass below picks up. A template that
+-- does not define the macro gets no metadata, so this stays nil and every callout comes back
+-- `breakable` -- correct, a few more split boxes, and no hangs.
+--
+-- Same convention as this round's two other shared-system changes (`\ifdefined\FloatBarrier`
+-- and `\ifdefined\needspaceNow`): the capability is declared where the capability lives, and
+-- its absence costs a feature rather than the build. The difference is the failure mode, which
+-- is why this one is a hard gate and not a fallback.
+local PIN_BUDGET = nil
+
+-- No trade trim has a text block anywhere near this tall (US Letter's is 626pt). A larger
+-- declared budget is a units mistake (mm? bp? \textheight of a slide?), not a taller book,
+-- and honouring it would pin boxes past the cliff.
+local MAX_SANE_PIN_BUDGET = 1000
+
+-- Read on the Meta pass, which runs BEFORE the Div pass (this file returns the two filter
+-- sets in that order). An unusable declaration is reported and ignored: pinning off is the
+-- pre-round-8 behaviour and cannot hang anything.
+local function readPinBudget(meta)
+  local declared = meta and meta['callout-pin-budget']
+  if declared == nil then
+    if FORMAT and FORMAT:match('latex') then
+      io.stderr:write('callout-filter-print: callout pinning is OFF -- no `callout-pin-budget` ' ..
+        'metadata, so this template does not declare one (book-print.latex does it with ' ..
+        '\\calloutPinBudget). Every callout stays breakable; boxes may split and shed a tail.\n')
+    end
+    return
+  end
+  local n = tonumber(pandoc.utils.stringify(declared))
+  if not n or n <= 0 or n > MAX_SANE_PIN_BUDGET then
+    io.stderr:write('callout-filter-print: ignoring callout-pin-budget "' ..
+      tostring(pandoc.utils.stringify(declared)) .. '" (want a number of points in (0, ' ..
+      tostring(MAX_SANE_PIN_BUDGET) .. ']). Pinning stays OFF.\n')
+    return
+  end
+  PIN_BUDGET = n
+end
 -- ============================================================================
 
 local function charcount(s)
@@ -163,6 +222,7 @@ end
 
 -- Walk a block for inlines that change the measurement:
 --   an Image      the box's height is the image's, which this filter cannot know
+--   a RawInline   arbitrary LaTeX: `\vspace{20cm}`{=latex} is 20cm of height and no text
 --   a Note        a footnote, set at the foot of the box, so its height counts
 --   a LineBreak   a hard break; the caller has to place it, so it is counted here only to
 --                 check that the caller found every one of them
@@ -172,6 +232,13 @@ end
 -- EVERY branch of estimate_block() that measures running text must come through here. A
 -- branch that walks inlines itself sees no Image and no Note, and silently pins a box around
 -- a half-page diagram.
+--
+-- THE SHARED BLIND SPOT, and the reason two of the three breaches found so far were the same
+-- bug: pandoc.utils.stringify() returns "" for a Note and "" for a RawInline. It is a
+-- plain-text flattener and those two carry no plain text. So anything that reaches for the
+-- height of a footnote, or for the width of a raw inline, by stringifying the element that
+-- CONTAINS it measures zero and is silently short. A footnote's text is reached through
+-- `note.content`; a raw inline's height cannot be reached at all, so it is unmeasurable.
 local function inline_extras(blk)
   if not (pandoc.walk_block and pandoc.utils and pandoc.utils.stringify) then
     return nil -- an older pandoc: measure nothing rather than measure wrongly
@@ -179,9 +246,17 @@ local function inline_extras(blk)
   local extra, breaks, measurable = 0, 0, true
   pandoc.walk_block(blk, {
     Image = function() measurable = false end,
+    -- A RawInline's height is whatever the LaTeX does. `\vspace{20cm}`{=latex} inside a
+    -- callout measured as zero characters and the box was pinned, which is the Image case
+    -- again with a different element. Unmeasurable, same as an Image.
+    RawInline = function() measurable = false end,
     LineBreak = function() breaks = breaks + 1 end,
     Note = function(note)
-      local text = pandoc.utils.stringify(note)
+      -- note.content, NOT the Note: pandoc applies deNote in stringify, so
+      -- stringify(note) is "" for every footnote ever written and every one of them
+      -- costed exactly note_base + 2 note_lines = 32pt. A 15-line footnote was
+      -- under-measured by ~130pt against 108pt of total headroom.
+      local text = pandoc.utils.stringify(note.content)
       extra = extra + FIT.note_base
              + FIT.note_line * math.max(2, wrapped(text, FIT.note_chars))
     end,
@@ -203,6 +278,14 @@ end
 -- footnote is one this loop cannot see, and the honest answer there is "do not pin". That
 -- also makes a hard break inside a footnote unmeasurable, which is stricter than it needs to
 -- be and is the right way round.
+--
+-- NOTE TEXT IS DELIBERATELY NOT COUNTED HERE. stringify() drops a Note's body (see
+-- inline_extras()), and that is the behaviour this function wants: a footnote is not set in
+-- the running text, it is set at the foot of the box, and inline_extras() costs it there with
+-- note_base/note_line. Counting it in both places would double it. Only the marker is lost,
+-- which is a superscript digit or two. The same flattening hides a RawInline's text, and that
+-- one is NOT harmless -- inline_extras() answers "unmeasurable" for it, so no box containing
+-- one ever reaches this line count.
 local function lines_of_inlines(inlines)
   local lines, placed, parts = 0, 0, {}
   local function flush()
@@ -341,6 +424,9 @@ end
 -- Interface note for the sibling filters: this answers only "does it fit", never "should it
 -- be pinned". generateConversationCallout deliberately does not ask -- see there.
 function calloutFitsOnePage(contentBlocks, extras)
+  -- No template-declared budget, no pinning. This is the I-1 gate: the FIT constants
+  -- describe one page geometry and the filter cannot tell which one it is rendering onto.
+  if not PIN_BUDGET then return false end
   extras = extras or {}
   local h = estimate_blocks(contentBlocks)
   if not h then return false end
@@ -349,7 +435,7 @@ function calloutFitsOnePage(contentBlocks, extras)
   if extras.title then
     h = h + FIT.title_line * (wrapped(extras.title, FIT.title_chars) - 1)
   end
-  return h <= FIT.budget
+  return h <= PIN_BUDGET
 end
 
 -- A callout and its two float barriers travel in ONE RawBlock.
@@ -815,8 +901,17 @@ function Div(elem)
   end
 end
 
--- Return the filter
+-- Return the filter.
+--
+-- TWO PASSES, IN THIS ORDER. A single filter set walks blocks BEFORE Meta, so reading the
+-- pin budget in the same table as Div would read it after every pinning decision had already
+-- been made -- and made with PIN_BUDGET still nil, so nothing would ever pin. Returning a
+-- LIST runs the sets in sequence over the whole document, which is the only way a Div handler
+-- can see document metadata.
 return {
+  {
+    Meta = function(meta) readPinBudget(meta) end
+  },
   {
     Div = Div
   }

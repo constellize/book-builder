@@ -24,6 +24,11 @@ const { validateEmojis } = require("./validate-emojis.js");
 // that opens perfectly and is silently wrong.
 const { postProcessDocx } = require("./lib/docx-postprocess.js");
 
+// Callout pinning is declared by the LaTeX template (\calloutPinBudget) and forwarded to
+// callout-filter-print.lua as document metadata. See lib/callout-pin-budget.js for why the
+// template is the only place that can safely declare it.
+const { readCalloutPinBudget } = require("./lib/callout-pin-budget.js");
+
 class BookBuilder {
   constructor(options = {}) {
     this.options = {
@@ -1068,6 +1073,29 @@ class BookBuilder {
     // declares, which is why the defaults files no longer declare one at all.
     if (templatePath) {
       pandocArgs.push(`--template="${templatePath}"`);
+
+      // CALLOUT PINNING: opt-in, declared by the template, forwarded as metadata.
+      //
+      // callout-filter-print.lua pins a callout that it estimates will fit the page, and its
+      // constants were calibrated against one geometry (6x9, 0.75in margins, 11pt,
+      // linestretch 1.2). A Lua filter cannot read \textheight -- it runs before TeX exists
+      // -- and the print defaults deliberately name no template, so the only thing that knows
+      // the page is the template. A box pinned against the wrong budget does not warn and
+      // does not overfull: it hangs xelatex. So the filter pins nothing unless the template
+      // defines \calloutPinBudget, and this is what carries that number to it.
+      //
+      // Reading the template is a measurement, never a build dependency: a template that
+      // declares nothing simply gets no metadata and its callouts stay breakable.
+      const declaredPinBudget = readCalloutPinBudget(
+        await fs.readFile(templatePath, 'utf8').catch(() => '')
+      );
+      if (declaredPinBudget !== null) {
+        pandocArgs.push(`--metadata=callout-pin-budget:${declaredPinBudget}`);
+        if (this.options.verbose) {
+          console.log(chalk.gray(
+            `Callout pin budget: ${declaredPinBudget}pt (declared by ${path.basename(templatePath)})`));
+        }
+      }
     }
 
     // Lua filters. Pushed after --citeproc on purpose: citeproc must resolve citations

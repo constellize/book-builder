@@ -283,7 +283,38 @@ block, 113pt of headroom).
 breakanywhere=true`, so one logical line can occupy two or three typeset lines. The p.80 JSON
 sample is 16 source lines and 17 rendered ones.
 
-**How every constant was measured** (probe: a markdown file of `{=latex}` blocks run through
+**THE PROBE IS COMMITTED: `scripts/__tests__/fixtures/fit-probe.md`.** It re-derives every
+constant below, and its header carries the exact pandoc + xelatex commands, the reference
+measurements from 2026-11-02, and the arithmetic from each pair of measurements to each
+constant. Run it instead of trusting this table; these two numbers were the inputs to a
+decision whose wrong answer is an infinite build, and before round 8's fix wave they existed
+only as the prose below — produced once, by one implementer, and never falsified.
+
+The probe wraps REAL `::: info` / `::: code` / promptref callouts in `\setbox0=\vbox{...}` with
+raw-LaTeX blocks on either side, so it measures the filter's own output and there is no second
+copy of the LaTeX to drift. It is `grep FITPROBE` on the xelatex log. Two traps it documents:
+minted needs two xelatex passes or every code box measures as empty, and callout body
+PARAGRAPHS are rendered as one LaTeX paragraph by `generateLatexCallout` (one `pandoc.write`
+per block joined by a single newline), so the probe counts body lines with LINE BLOCKS. The
+estimator counts paragraphs separately and therefore runs high on a multi-paragraph callout,
+which is the safe direction.
+
+**One constant does not reconcile, and it is low rather than high.** `title_line` measures
+about 19.65pt per wrapped boxed-title line against the 18.00 held in `FIT` (the probe's header
+shows the working: a promptref repeats its title in its own `Link:` line, so the raw difference
+has to have one `text_line` backed out of it). Bounded — only promptref boxes wrap a title,
+none in this book reaches three lines, and the budget carries 110pt of headroom — but it is in
+the direction that hangs builds. Correct it the next round in which the pin count is allowed to
+move, since changing it re-decides promptref boxes.
+
+**THE CLIFF HAS NO COMMITTED PROBE, DELIBERATELY.** A probe that reproduces it does not
+terminate, and a committed one would eventually be run by somebody who had not read why. The
+procedure for re-deriving it by hand — including the exact content that produced 35 safe / 36
+unterminating, that it must be run in a terminal you are watching, and that you will have to
+kill it — is written out at the foot of `fit-probe.md`.
+
+**How every constant was measured** (the original derivation, superseded by the probe above but
+kept because the numbers agree: a markdown file of `{=latex}` blocks run through
 `pandoc-defaults-print.yaml` and `book-print.latex`, each quantity captured with
 `\setbox0=\vbox{...}\typeout{\the\ht0}`; minted needs two xelatex passes before its content
 exists, or every code box measures as empty):
@@ -301,6 +332,31 @@ exists, or every code box measures as empty):
 | `code_pad` | 6.30 | code box overhead (39.97) less text box overhead (34.00) |
 | `note_base`, `note_line`, `note_chars` | 10.00, 11.00, 40 | promptref box with a long-URL footnote (101.28) less the same without one (69.28) = 32pt = rule+skip plus 2 lines; a short URL costs 21pt = rule+skip plus 1 line |
 | `em` | 11.00 | the body font size, for the promptref box's `\vspace{0.3em}` and `\vspace{0.5em}` |
+
+**PINNING IS OPT-IN, AND THE TEMPLATE IS WHAT OPTS IN.** Every constant in the table above
+describes ONE page geometry. book-builder is shared, and `config/pandoc-defaults-print.yaml`
+names the filters but deliberately names no template — the template comes from each consuming
+book's own `book.config.js`. So a book using these print defaults with an A5 or 10pt template
+would have had its boxes pinned against this book's 542pt text block, and the failure mode is
+not a warning but a non-terminating xelatex. The filter therefore pins NOTHING until a budget
+is declared:
+
+- `templates/book-print.latex` defines `\newcommand{\calloutPinBudget}{433.6}`, beside the
+  `geometry` block that justifies the number;
+- `build-book.js` reads that definition out of whichever template the target names
+  (`scripts/lib/callout-pin-budget.js`) and forwards it as
+  `--metadata=callout-pin-budget:433.6`;
+- the filter reads it on a Meta pass that runs BEFORE its Div pass (the filter file returns a
+  LIST of two filter sets for exactly this reason — a single set walks blocks before Meta, so
+  every pinning decision would be taken with the budget still unread), sanity-checks it
+  (a positive number of points, at most 1000) and otherwise leaves `PIN_BUDGET` nil.
+
+With no declaration every callout comes back `breakable`, which is the pre-round-8 behaviour:
+correct, a few more split boxes, and no hangs. The filter says so on stderr rather than
+silently, so a build that lost the metadata cannot read as a clean pinning pass. Same
+convention as this round's `\ifdefined\FloatBarrier` and `\ifdefined\needspaceNow` guards —
+the capability is declared where the capability lives — but a hard gate rather than a fallback,
+because this one's failure mode is an infinite loop.
 
 Model: `height = box + title overflow + Σ blocks + extras`, and a box is pinned when that is
 `<= 433`. Predicted 543.97pt at 35 code lines against an empirically safe 35 and an
@@ -324,6 +380,28 @@ Both are fixed: `lines_of_inlines()` splits an inline list at hard breaks, and a
 cannot place (one nested inside `Strong`, a `Link`, a `Span` or a footnote) makes the box
 unmeasurable rather than short. Four tests cover them, all of which fail against the first
 version of the filter.
+
+**A THIRD breach, found by the whole-branch review, and the one that names the shared cause:**
+`pandoc.utils.stringify()` returns `""` for a `Note` (pandoc applies deNote) and `""` for a
+`RawInline`. It is a plain-text flattener and neither element carries plain text. So
+
+- every footnote was costed at `note_base + 2 x note_line` = **32pt regardless of its real
+  height**, because `stringify(note)` was `""`. An `::: info` callout of 18 one-line paragraphs
+  plus one ~2,800-character footnote estimated at 359.76pt and was PINNED, against a true
+  height near 1,218pt. The fix is `stringify(note.content)`; with it the same box estimates at
+  1,217.76pt and stays breakable, and every estimate across the manuscript is unchanged
+  (123 pinned before and after);
+- a **`RawInline` measured as zero characters**, so a callout containing
+  `` `\vspace{20cm}`{=latex} `` was pinned. It is now unmeasurable, like an `Image`.
+
+`lines_of_inlines()` deliberately does NOT count note text — a footnote is set at the foot of
+the box, not in the running text, and `inline_extras()` costs it there; counting it in both
+places would double it. The RawInline case is not harmless the same way, which is why that one
+makes the whole box unmeasurable instead.
+
+The lesson generalises: **anything reached for by stringifying a container is invisible if it
+is not plain text.** Every branch that measures running text goes through `inline_extras()`,
+and `inline_extras()` is the only place that knows which elements stringify cannot see.
 
 **Known interaction, NOT fixed: a callout containing its own lead-in can never be pinned.**
 `keep-leadin-with-content.lua` runs first and walks into callout `Div`s on purpose, so it
@@ -664,7 +742,9 @@ Final Output (PDF/HTML/EPUB)
 
 ### `\clubpenalty` cannot protect a one-line paragraph
 
-`\clubpenalty=10000` forbids leaving a paragraph's first line alone at a page foot, but it acts on a line break inside a paragraph. A one-line paragraph has no line break to penalise, so any paragraph that is only one line long (a standalone bold label, say) is strandable by construction, whatever the penalties are set to. What matters is the length of the whole paragraph, not the lead: a run-in bold lead followed by prose is only at risk if the entire paragraph fits on one line. This is why the fix for stranded labels (e.g. `**Day 1: ...**` alone at a page foot) is to fold them into the paragraph they introduce rather than to add keep-with-next machinery. `scripts/validate-structure.js` (`npm run validate:structure`, run by `make lint`) finds such bold-only blocks in source. It reports a warning and exits 0 by design: such labels are often legitimate, and this builder is shared, so a failing check would be switched off.
+`\clubpenalty=10000` forbids leaving a paragraph's first line alone at a page foot, but it acts on a line break inside a paragraph. A one-line paragraph has no line break to penalise, so any paragraph that is only one line long (a standalone bold label, say) is strandable by construction, whatever the penalties are set to. What matters is the length of the whole paragraph, not the lead: a run-in bold lead followed by prose is only at risk if the entire paragraph fits on one line. This is why the fix for stranded labels (e.g. `**Day 1: ...**` alone at a page foot) is to fold them into the paragraph they introduce rather than to add keep-with-next machinery. `scripts/validate-structure.js` (`npm run validate:structure`, run by `make lint`) finds such bold-only blocks in source. It reports a warning and exits 0 by design: such labels are often legitimate, and this builder is shared, so a failing check would be switched off. Exit **2** means something different — the check did not RUN (no config, no `glob` because the submodule was never `npm install`ed, zero files scanned, a file it could not read), and `make lint` prints its green pass CONDITIONALLY on that. It used to print it unconditionally, over the top of `WARNING validate-structure could not run (nothing was checked)`, so a lint target that had checked nothing read as a clean one; the same `@echo` also masked `node --check` failures, which `find -exec` always exits 0 from (now piped through `xargs`). A directory or unreadable file in the source list is caught per file, so one bad entry no longer abandons the rest of the scan.
+
+**`scripts/verify-pdf.js`'s LAST LINE has to carry the verdict, because its exit code cannot.** The design asked for `Overfull \vbox` to fail the build; it ships as a warning, since book-builder is shared and a check that breaks other books' builds gets switched off. That left a build with five fresh orphaned callout tails and a 40pt box hanging off a page ending on `No conformance errors, 6 warning(s)` — indistinguishable from six cosmetic warnings. The `notMeasured` caveat did not cover it either: that fires when a check did not RUN, not when a check ran and found the publisher's faults again. So `summaryLines()` (exported, unit-tested) names new class-1/class-2 findings with their pages, new class-3-5 findings, and a non-zero `Overfull \vbox` count, and the clean branch says in so many words that the warnings it counted are none of those. The exit code is deliberately unchanged.
 
 ---
 

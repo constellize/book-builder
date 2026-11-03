@@ -119,9 +119,23 @@ clean:
 # Development helpers
 lint:
 	@echo "🔍 Linting JavaScript files..."
-	@find $(SCRIPTS_DIR) -name "*.js" -exec node --check {} \;
-	@node $(SCRIPTS_DIR)/validate-structure.js
-	@echo "✅ Lint check passed!"
+	@# `find -exec` exits 0 whatever the -exec command did, so every `node --check` failure
+	@# was masked by the green line that used to sit at the foot of this target. xargs
+	@# propagates a failing invocation (exit 123), and make stops here.
+	@find $(SCRIPTS_DIR) -name "*.js" -print0 | xargs -0 -n1 node --check
+	@# validate-structure exits 0 for manuscript warnings -- those must never fail anything --
+	@# and 2 when it could not measure what it was asked to measure (no config, no `glob` because
+	@# the submodule was never `npm install`ed, zero files scanned, an unreadable file). The
+	@# green line below is CONDITIONAL on that: it used to print over the top of
+	@# "WARNING validate-structure could not run (nothing was checked)", which made a lint
+	@# target that checked nothing read as a clean pass.
+	@node $(SCRIPTS_DIR)/validate-structure.js; rc=$$?; \
+		if [ $$rc -eq 0 ]; then \
+			echo "✅ Lint check passed!"; \
+		else \
+			echo "❌ Lint INCOMPLETE: validate-structure exited $$rc -- it did not check what it was asked to check (see the warnings above). This is not a clean result."; \
+			exit $$rc; \
+		fi
 
 check-templates:
 	@echo "🔍 Checking LaTeX templates..."

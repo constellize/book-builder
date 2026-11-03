@@ -8,7 +8,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { compareToBaseline, checkTypesetFaults } = require('../verify-pdf');
+const { compareToBaseline, checkTypesetFaults, summaryLines } = require('../verify-pdf');
 
 const finding = (cls, page, kind) => ({ cls, page, kind });
 
@@ -195,5 +195,68 @@ describe('missing prerequisites are "not measured", not a failure and not a clea
     const baselinePath = path.join(tmp, 'baseline.json');
     expect(() => checkTypesetFaults(pdf, baselinePath)).toThrow(/detector failed/);
     expect(fs.existsSync(baselinePath)).toBe(false);
+  });
+});
+
+// I-3. The design asked for `Overfull \vbox` to fail the build; it shipped as a warning,
+// because book-builder is shared. The exit code therefore cannot be the signal, so the LAST
+// LINE has to be: a build with five fresh orphaned callout tails and a 40pt box hanging off
+// the bottom of a page used to end on `No conformance errors, 6 warning(s)`, which reads
+// exactly like six cosmetic warnings. `notMeasured` did not cover it either -- that fires
+// when a check did not RUN, not when a check ran and found the publisher's faults again.
+describe('summaryLines: the last line distinguishes faults from cosmetic warnings', () => {
+  const text = (r) => summaryLines(r).map((l) => l.text).join('\n');
+  const sevs = (r) => summaryLines(r).map((l) => l.sev);
+
+  test('a clean build reads clean', () => {
+    expect(sevs({ warnings: 0 })).toEqual(['ok']);
+    expect(text({ warnings: 0 })).toBe('No conformance errors');
+  });
+
+  test('cosmetic warnings say in so many words that they are not typeset faults', () => {
+    expect(sevs({ warnings: 3 })).toEqual(['ok']);
+    expect(text({ warnings: 3 })).toMatch(/none of them a new typeset fault or an Overfull \\vbox/);
+  });
+
+  test('new class-1/class-2 findings are named, with their pages, and the line is not ok', () => {
+    const r = { warnings: 6, newFindings: [
+      { cls: '2_orphan_tail', page: 105, kind: 'footnote' },
+      { cls: '2_orphan_tail', page: 108, kind: 'footnote' },
+      { cls: '1_figure_in_callout', page: 215, kind: 'figure' },
+    ] };
+    expect(sevs(r)).not.toContain('ok');
+    const t = text(r);
+    expect(t).toMatch(/3 NEW class-1\/class-2 typeset fault\(s\)/);
+    expect(t).toMatch(/p105 p108 p215/);
+    // The phrase a reader scanning for "is this fine" would stop on.
+    expect(t).toMatch(/INCLUDING REAL TYPESET FAULTS/);
+  });
+
+  test('a non-zero Overfull \\vbox count is named on its own', () => {
+    // The asymmetric cost of pinning: no new detector finding, but a box ran off the page.
+    const r = { warnings: 1, overfullVboxes: 1 };
+    expect(sevs(r)).not.toContain('ok');
+    expect(text(r)).toMatch(/1 Overfull \\vbox/);
+  });
+
+  test('zero Overfull boxes and no new findings stay in the clean branch', () => {
+    expect(sevs({ warnings: 2, overfullVboxes: 0, newFindings: [] })).toEqual(['ok']);
+  });
+
+  test('classes 3-5 are reported, but apart from the publisher\'s own two', () => {
+    const t = text({ warnings: 4, newFindings: [{ cls: '4_widow_orphan', page: 75, kind: 'orphan' }] });
+    expect(t).toMatch(/1 new typeset fault\(s\) in classes 3-5/);
+    expect(t).not.toMatch(/class-1\/class-2/);
+  });
+
+  test('NOT MEASURED keeps its caveat and makes no claim about what was not measured', () => {
+    const t = text({ warnings: 1, notMeasured: true });
+    expect(t).toMatch(/NOT MEASURED/);
+    expect(t).not.toMatch(/none of them/);
+  });
+
+  test('a conformance error prints the error line and no clean line', () => {
+    expect(sevs({ errors: 2, warnings: 1 })).toEqual(['error']);
+    expect(text({ errors: 2, warnings: 1 })).toBe('2 error(s), 1 warning(s)');
   });
 });

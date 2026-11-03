@@ -20,6 +20,28 @@
             inner=0.75in,outer=0.5in,top=0.75in,bottom=0.75in,
             footskip=0.35in]{geometry}
 
+% CALLOUT PINNING IS DECLARED HERE, and nowhere else.
+%
+% callout-filter-print.lua sets `breakable=false` on a callout whose estimated height fits
+% the text block, so the box moves whole instead of splitting and shedding an orphaned tail
+% (publisher review item 2). Its height constants were calibrated against THIS page: the 6x9
+% trim above, \textheight 542.03pt, 11pt body at linestretch 1.2, \setminted fontsize=\small.
+% 433.6pt is 80% of that text block; the missing 20% is estimation headroom.
+%
+% THE NUMBER IS A PROPERTY OF THE PAGE, NOT OF THE FILTER. book-builder is shared, and
+% config/pandoc-defaults-print.yaml names the filters but not the template -- the template
+% comes from each book's own book.config.js. A book with its own A5 or 10pt template must NOT
+% inherit this budget: a pinned box that does not fit does not warn and does not overfull, it
+% hangs xelatex (35 rendered code lines typeset, 36 never terminate). So the filter pins
+% nothing until a template declares a budget, and this definition is that declaration.
+% build-book.js reads it out of whichever template the target names and passes it to pandoc as
+% --metadata=callout-pin-budget. Comment this line out and every callout stays breakable:
+% a few more split boxes, no hangs.
+%
+% If the geometry above changes, RE-MEASURE (scripts/__tests__/fixtures/fit-probe.tex) rather
+% than scaling this number -- the estimator's per-line constants change with it too.
+\newcommand{\calloutPinBudget}{433.6}
+
 % PDF/X-1a:2001 compliance, as specified by the publisher (Lightning Source).
 % `x-1a1` is the 2001 part; plain `x-1a` emits :2003, which is also inconsistent with
 % the PDF 1.3 output this produces -- :2003 is defined against PDF 1.4.

@@ -8,9 +8,15 @@
  * has no line break to penalise, so it can land alone at the bottom of a page
  * whatever the penalties are set to. This finds them in source.
  *
- * This is a WARNING and always exits 0. Standalone bold labels are often a
- * legitimate choice, and this builder is shared by several books; a check that
- * failed their builds would be switched off. The author decides.
+ * EXIT CODES. Warnings about the manuscript are exit 0, always: standalone bold labels are
+ * often a legitimate choice, and this builder is shared by several books; a check that failed
+ * their builds would be switched off. The author decides.
+ *
+ * Exit 2 means something else entirely -- the check did NOT measure what it was asked to
+ * measure: no config, no `glob`, zero files, a file it could not read. That has to be
+ * distinguishable from a clean run, because `make lint` used to print a green pass over the
+ * top of "nothing was checked" and the only honest reading of that line was "unknown".
+ * Nothing in a book BUILD runs this script, so a non-zero exit here cannot break one.
  */
 
 const fs = require('fs');
@@ -82,41 +88,71 @@ function manuscriptFiles(config) {
   return { root, files, missing };
 }
 
+// "The check did not run" is not "the check found nothing". Reachable for a consuming book
+// that has not run `npm install` in the submodule: `glob` and `../config/book.config.js` are
+// both required inside main().
+const EXIT_NOT_MEASURED = 2;
+
 function main() {
   const config = require('../config/book.config.js');
   const { root, files, missing } = manuscriptFiles(config);
+  let notChecked = 0;
   for (const m of missing) {
     console.warn(`WARNING configured source file not found, not checked: ${m}`);
+    notChecked++;
   }
 
   if (files.length === 0) {
     // An empty file list would otherwise look exactly like a clean result.
     console.warn(`WARNING: validate-structure scanned 0 files under ${root}. ` +
       'Nothing was checked; the source paths in book.config.js may be wrong.');
+    process.exitCode = EXIT_NOT_MEASURED;
     return;
   }
 
-  let total = 0;
+  let total = 0, scanned = 0;
   for (const file of files) {
     const rel = path.relative(root, file);
-    for (const b of findStrandableBlocks(fs.readFileSync(file, 'utf8'), rel)) {
-      console.warn(`WARNING ${b.file}:${b.line}  one-line bold block: "${b.text}"`);
-      total++;
+    try {
+      for (const b of findStrandableBlocks(fs.readFileSync(file, 'utf8'), rel)) {
+        console.warn(`WARNING ${b.file}:${b.line}  one-line bold block: "${b.text}"`);
+        total++;
+      }
+      scanned++;
+    } catch (err) {
+      // A directory matched by a glob, a broken symlink, a permissions problem. Without this
+      // catch the throw escaped to the outer one, which abandoned every REMAINING file while
+      // printing "nothing was checked" -- so a single bad entry silently stopped the scan and
+      // reported it as if the whole run had failed.
+      console.warn(`WARNING ${rel} could not be read, NOT checked: ${err && err.message}`);
+      notChecked++;
     }
   }
-  console.log(`validate-structure: scanned ${files.length} files, ${total} warning(s). ` +
+  console.log(`validate-structure: scanned ${scanned} of ${scanned + notChecked} configured ` +
+    `files, ${total} warning(s). ` +
     'A one-line block cannot be protected by \\clubpenalty and may strand at a page foot; ' +
-    'fold it into the paragraph it introduces if that is a problem. (Warnings only; exit 0.)');
+    'fold it into the paragraph it introduces if that is a problem. ' +
+    '(Manuscript warnings do not fail this check.)');
+  if (notChecked) {
+    console.warn(`WARNING: ${notChecked} configured file(s) were NOT checked (listed above), ` +
+      'so this run did not measure the whole manuscript. Exiting non-zero to say so.');
+    process.exitCode = EXIT_NOT_MEASURED;
+  }
 }
 
 if (require.main === module) {
-  // Warn-only by contract: nothing here may fail `make lint` or a build.
+  // Manuscript warnings never fail anything. A check that could not RUN says so, with a
+  // non-zero exit, because `make lint` printed a green pass over the top of this warning and
+  // a lint target that checked nothing read as a clean one.
+  //
+  // process.exitCode, not process.exit(): process.exit() can truncate piped stdout, and this
+  // script's output is the whole point of running it.
   try {
     main();
   } catch (err) {
     console.warn(`WARNING validate-structure could not run (nothing was checked): ${err && err.message}`);
+    process.exitCode = EXIT_NOT_MEASURED;
   }
-  process.exit(0);
 }
 
 module.exports = { findStrandableBlocks, manuscriptFiles };

@@ -102,7 +102,10 @@ function readOverfullVboxes(pdfPath, { pdfPages } = {}) {
 
 function checkPdf(file, { expectPrint }) {
   const findings = [];
-  const add = (sev, rule, msg, detail) => findings.push({ sev, rule, msg, detail });
+  // `data` carries machine-readable fields for the final summary (see summaryLines): the
+  // last line has to name a non-zero Overfull \vbox count, and re-parsing it out of `msg`
+  // would be a second place for that number to drift.
+  const add = (sev, rule, msg, detail, data) => findings.push({ sev, rule, msg, detail, ...(data || {}) });
 
   if (!fs.existsSync(file)) {
     add('error', 'missing', `${file} does not exist — build it first`);
@@ -252,7 +255,8 @@ function checkPdf(file, { expectPrint }) {
           `(${r.boxes.length} in the log in total)` +
           (bad.some((b) => b.page === null)
             ? `; ${bad.filter((b) => b.page === null).length} with page unknown` : ''),
-          bad.slice(0, 5).map((b) => `  p${b.page === null ? '?' : b.page}  ${b.points.toFixed(1)}pt too high`).join('\n'));
+          bad.slice(0, 5).map((b) => `  p${b.page === null ? '?' : b.page}  ${b.points.toFixed(1)}pt too high`).join('\n'),
+          { overfullCount: bad.length });
       } else {
         add('info', 'overfull-vbox',
           `0 Overfull \\vbox of ${OVERFULL_VBOX_TOLERANCE_PT}pt or more ` +
@@ -373,7 +377,87 @@ function checkTypesetFaults(pdfPath, baselinePath, { target = 'print' } = {}) {
 
 const describeFinding = (f) => `${f.cls.replace('_', ' ')}  p${f.page}  ${f.kind}`;
 
-module.exports = { checkPdf, parseOverfullVboxes, readOverfullVboxes, compareToBaseline, checkTypesetFaults };
+// --- the last line of output -------------------------------------------------------
+// WHY THIS IS A FUNCTION AND NOT AN inline console.log.
+//
+// The design asked for `Overfull \vbox` to FAIL the build. It shipped as a warning, because
+// book-builder is shared and a check that breaks other books' builds gets switched off. That
+// trade-off is defensible -- but it meant a build with five fresh orphaned callout tails and a
+// 40pt box hanging off the bottom of a page ended on the line
+//
+//     No conformance errors, 6 warning(s)
+//
+// which is indistinguishable from six cosmetic warnings. The `notMeasured` caveat did not
+// cover it either: that only fires when a check did not RUN, not when a check ran and found
+// the publisher's own faults again.
+//
+// So the last line names them. Classes 1 and 2 (a figure placed inside a callout, a callout
+// that split and shed an orphaned tail) are the two faults the publisher reported and this
+// round fixed; a NEW one of those is a regression of the work, not a warning about it. An
+// Overfull \vbox is the asymmetric cost of the fix itself -- a pinned box that did not fit.
+//
+// The exit code is deliberately unchanged. This is about what a reader scanning one line can
+// tell apart, not about what fails.
+const PUBLISHER_FAULT_CLASSES = ['1_figure_in_callout', '2_orphan_tail'];
+
+/**
+ * @param {{errors:number, warnings:number, notMeasured:boolean,
+ *          newFindings:{cls:string,page:number,kind:string}[], overfullVboxes:number}} r
+ * @returns {{sev:'error'|'warning'|'ok', text:string}[]} lines, in order
+ */
+function summaryLines({ errors = 0, warnings = 0, notMeasured = false,
+  newFindings = [], overfullVboxes = 0 } = {}) {
+  const lines = [];
+  if (errors) {
+    lines.push({ sev: 'error', text: `${errors} error(s), ${warnings} warning(s)` });
+  }
+
+  const publisherFaults = newFindings.filter((f) => PUBLISHER_FAULT_CLASSES.includes(f.cls));
+  const otherFaults = newFindings.filter((f) => !PUBLISHER_FAULT_CLASSES.includes(f.cls));
+  const named = [];
+  if (publisherFaults.length) {
+    named.push(`${publisherFaults.length} NEW class-1/class-2 typeset fault(s) ` +
+      `(figure inside a callout / orphaned callout tail) — the publisher's own two faults, ` +
+      `back on ${[...new Set(publisherFaults.map((f) => `p${f.page}`))].join(' ')}`);
+  }
+  if (otherFaults.length) {
+    named.push(`${otherFaults.length} new typeset fault(s) in classes 3-5 ` +
+      `(${[...new Set(otherFaults.map((f) => f.cls))].join(', ')})`);
+  }
+  if (overfullVboxes) {
+    named.push(`${overfullVboxes} Overfull \\vbox — a box taller than the text block ran off ` +
+      `the bottom of a page, which is what a pinned callout does when the estimate was wrong`);
+  }
+
+  if (!errors) {
+    if (named.length) {
+      // Not green, and the faults are named before the warning count rather than after it.
+      lines.push({ sev: 'warning',
+        text: `No conformance errors, but ${warnings} warning(s) INCLUDING REAL TYPESET FAULTS:` });
+      for (const n of named) lines.push({ sev: 'warning', text: `  • ${n}` });
+      lines.push({ sev: 'warning',
+        text: '  These are page faults, not cosmetic warnings. Exit code is still 0 on purpose ' +
+          '(book-builder is shared), so the exit code is not the signal — this is.' });
+    } else {
+      // "none of them a ..." is only sayable when those two checks actually ran. With
+      // notMeasured set, the honest tail is the caveat below and nothing more.
+      const clean = warnings && !notMeasured
+        ? ', ' + warnings + ' warning(s), none of them a new typeset fault or an Overfull \\vbox'
+        : (warnings ? `, ${warnings} warning(s)` : '');
+      lines.push({ sev: 'ok', text: `No conformance errors${clean}` });
+    }
+  }
+
+  if (notMeasured) {
+    lines.push({ sev: 'warning',
+      text: 'Typeset faults or vertical overflow were NOT MEASURED on this build (see above) — ' +
+        '"no conformance errors" does not cover them.' });
+  }
+  return lines;
+}
+
+module.exports = { checkPdf, parseOverfullVboxes, readOverfullVboxes, compareToBaseline,
+  checkTypesetFaults, summaryLines };
 
 if (require.main === module) {
   // The baseline is per book and tracked with it. Override with TYPESET_BASELINE.
@@ -384,6 +468,9 @@ if (require.main === module) {
   ];
 
   let errors = 0, warnings = 0, notMeasured = false;
+  // Accumulated across targets so the last line can name them (see summaryLines).
+  const newFindings = [];
+  let overfullVboxes = 0;
   console.log('PDF conformance checks\n');
   for (const t of targets) {
     const rel = path.relative(process.cwd(), t.file);
@@ -414,7 +501,7 @@ if (require.main === module) {
             (r.baselinePageCount !== r.pageCount
               ? `; page count ${r.baselinePageCount} -> ${r.pageCount}, so page numbers may have shifted`
               : '') + RST);
-          for (const f of r.newFindings) { warnings++; console.log(`  ${YEL}warning${RST} typeset-faults NEW   ${describeFinding(f)}`); }
+          for (const f of r.newFindings) { warnings++; newFindings.push(f); console.log(`  ${YEL}warning${RST} typeset-faults NEW   ${describeFinding(f)}`); }
           for (const f of r.fixedFindings) console.log(`  ${GRN}fixed  ${RST} typeset-faults FIXED ${describeFinding(f)}`);
         }
       } catch (e) {
@@ -425,6 +512,7 @@ if (require.main === module) {
 
     for (const f of findings) {
       if (f.rule === 'overfull-vbox-not-measured') notMeasured = true;
+      if (f.rule === 'overfull-vbox' && f.overfullCount) overfullVboxes += f.overfullCount;
       if (f.sev === 'error') { errors++; console.log(`  ${RED}ERROR${RST}   ${f.rule} — ${f.msg}`); }
       else if (f.sev === 'warning') { warnings++; console.log(`  ${YEL}warning${RST} ${f.rule} — ${f.msg}`); }
       else console.log(`  ${DIM}info    ${f.rule} — ${f.msg}${RST}`);
@@ -433,13 +521,12 @@ if (require.main === module) {
     console.log('');
   }
 
-  if (errors) {
-    console.log(`${RED}${errors} error(s)${RST}, ${warnings} warning(s)`);
-    process.exit(1);
+  const COLOUR = { error: RED, warning: YEL, ok: GRN };
+  for (const line of summaryLines({ errors, warnings, notMeasured, newFindings, overfullVboxes })) {
+    console.log(`${COLOUR[line.sev]}${line.text}${RST}`);
   }
-  console.log(`${GRN}No conformance errors${RST}${warnings ? `, ${warnings} warning(s)` : ''}`);
-if (notMeasured) {
-  console.log(`${YEL}Typeset faults or vertical overflow were NOT MEASURED on this build (see above) -- ` +
-    `"no conformance errors" does not cover them.${RST}`);
-}
+  // Unchanged on purpose: only a CONFORMANCE error fails this script. book-builder is shared,
+  // and a check that breaks other books' builds gets switched off. The summary above is what
+  // carries the typeset faults, not the exit code.
+  if (errors) process.exit(1);
 }
