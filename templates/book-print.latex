@@ -322,6 +322,8 @@ $endif$
 % Do NOT reach for it in front of a HEADING as well. \sectionbreak and friends below are
 % deliberately still lazy: making them eager was measured in round 8 and stranded three more
 % lead-ins at page feet (the publisher's fault class 4) even though it tidied the whitespace.
+% That measurement was repeated in full against the finished round-8 tree and came out the
+% same; it is now a documented switch, \headingReserve, which is OFF. See the note there.
 %
 % \needspace is lazy. It lays down a -100 penalty and stretch glue and lets TeX decide LATER,
 % when the page overfills, whether that penalty was the best place to break. In front of a
@@ -450,9 +452,52 @@ $endif$
 % titlesec calls \sectionbreak and friends immediately before each heading, so reserving
 % space there covers every case regardless of what comes next. A subsubsection needs less:
 % "1.7.1 The Intent Behind CodePromptu" sat second-to-last on p.47 above only a footnote.
-\newcommand{\sectionbreak}{\needspace{7\baselineskip}}
-\newcommand{\subsectionbreak}{\needspace{6\baselineskip}}
-\newcommand{\subsubsectionbreak}{\needspace{5\baselineskip}}
+%
+% LAZY OR EAGER: \headingReserve is the switch, and it is LAZY by default -- which is the
+% behaviour this book ships. Point it at \needspaceNow and every heading reservation below
+% becomes eager; left at \needspace it is byte-for-byte what it was before the switch
+% existed (verified: the print build is identical with the switch in place).
+%
+% To turn eager on, change the \providecommand line below to
+%
+%   \providecommand{\headingReserve}{\needspaceNow}
+%
+% which is the route that was measured. A consuming book can instead say
+% \renewcommand{\headingReserve}{\needspaceNow} in its own header-includes, which pandoc
+% inserts further down this preamble -- \renewcommand, not \providecommand, because the
+% line below has already defined it. \sectionbreak expands \headingReserve at use time, so
+% a later redefinition takes effect.
+%
+% WHY IT IS OFF. Eager was built and measured against lazy on this 267-page book in round 8,
+% with \raggedbottom already in force and the pre-flight fit check running. Full numbers:
+%
+%   book/.superpowers/sdd/2026-11-02-round-8-typesetting-and-ch9/task-8-report.md
+%
+% Eager does what it claims LOCALLY: the six body pages the owner complained about filled
+% from 4-10 body lines to 14-25. But it moved no white space out of the book -- both builds
+% set the same 5502 body lines in the same 267 pages, and the count of pages under 20 body
+% lines was 106 BEFORE AND AFTER. The slack simply reappeared elsewhere, including two new
+% near-empty body pages (3 lines and 2 lines) that are worse than anything it fixed.
+%
+% And it cost the publisher's fault class 4: stranded lead-ins went 3 -> 6. All three new
+% ones are the same shape -- a lead-in whose pinned callout has a TWO-LINE title, which the
+% 9-line reservation in keep-leadin-with-content.lua does not cover. Filling the page is
+% what pushes those pairs down to the page foot where that gap shows. Raising the callout
+% reservation to 12 recovered only one of the three (class 4 = 5, still worse than 3).
+%
+% The reservation SIZE is not the lever either: eager at 5/4/3 instead of 7/6/5 produced an
+% identical book on every measure, down to the same six class-4 findings.
+%
+% WHERE THE SHORT PAGES ACTUALLY COME FROM. Removing heading reservations altogether -- the
+% most this knob can possibly do -- moved pages under 20 lines only 106 -> 104. Of the 41
+% pages under 10 body lines, 21 are structural (blank versos, chapter openers, the page
+% before a chapter opener) and 8 end short because the next page opens with a pinned callout
+% that would not fit. The heading reservation is not what makes this book's pages short, so
+% changing how it decides cannot be what fixes them.
+\providecommand{\headingReserve}{\needspace}
+\newcommand{\sectionbreak}{\headingReserve{7\baselineskip}}
+\newcommand{\subsectionbreak}{\headingReserve{6\baselineskip}}
+\newcommand{\subsubsectionbreak}{\headingReserve{5\baselineskip}}
 
 % Customize section titles
 \titleformat{\section}
