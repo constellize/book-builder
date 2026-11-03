@@ -353,3 +353,64 @@ maybe('callout filter: pinning is opt-in, declared by the template', () => {
       fs.readFileSync(path.join(TEMPLATES, 'book-digital.latex'), 'utf8'))).toBeNull();
   });
 });
+
+// THE FIT CONSTANTS, THE PROBE AND THE WRITE-UP MUST STAY IN STEP. There are three copies of
+// every one of these numbers -- the filter's FIT table, the reference run recorded in
+// fixtures/fit-probe.md, and the derivation table in memory-bank/systemPatterns.md -- and the
+// numbers are the inputs to a decision whose wrong answer is a build that never terminates.
+// title_line was 18.00 in the filter against 19.65 in the probe for a whole round, recorded as
+// a finding and shipped anyway; these tests are what makes that visible next time.
+maybe('callout filter: the FIT constants agree with the committed probe', () => {
+  const LUA = fs.readFileSync(path.join(FILTERS, 'callout-filter-print.lua'), 'utf8');
+  const PROBE = fs.readFileSync(path.join(__dirname, 'fixtures', 'fit-probe.md'), 'utf8');
+  // ANCHORED TO THE START OF A LINE, which is where a FIT table entry is. Unanchored, the
+  // first match for `text_line = ` is inside title_line's own comment, which quotes the
+  // probe's arithmetic ("- text_line = 35.97 - 16.32"), and the test silently measures the
+  // documentation instead of the constant.
+  const fit = (name) => Number(
+    new RegExp(`^\\s*${name}\\s*=\\s*([\\d.]+)`, 'm').exec(LUA)[1]);
+
+  beforeAll(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'calloutfit-const-')); });
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  test('title_line holds the probe\'s measured value, not a rounded guess', () => {
+    // 19.65 = (title-83 - title-11) - text_line, the LARGER of the two measured steps. The
+    // 2->3 step is only 13.03 because the attached boxed title is laid over the box's own top
+    // padding; using the larger figure for every line over-estimates a 3-line title, which is
+    // the direction that leaves a box breakable rather than pinning one that does not fit.
+    expect(fit('title_line')).toBeCloseTo(19.65, 2);
+    expect(PROBE).toContain('19.65');
+    expect(PROBE).toContain('13.03');
+  });
+
+  test('every FIT constant the probe measures is the value the probe recorded', () => {
+    for (const [name, want] of Object.entries({
+      text_block: 542.03, text_line: 16.32, code_line: 14.40, code_pad: 6.30,
+      note_line: 11.00, em: 11.00, box: 34.00, title_line: 19.65,
+    })) {
+      expect(fit(name)).toBeCloseTo(want, 2);
+    }
+  });
+
+  // The estimator must actually SPEND title_line on each line a boxed title wraps to. The
+  // term is one line of Lua and a refactor could drop it silently: nothing in the rendered
+  // book would change until a box near the budget was pinned that should not have been.
+  test('a wrapped boxed title costs title_line per extra line, on top of the Link: line', () => {
+    const est = (title) => {
+      const tex = pandocToLatex(
+        `::: {.promptref title="${title}" url="https://constellize.com/p/x"}\nOne body line.\n:::\n`);
+      return Number(/%%CALLOUTFIT .* est=([\d.]+)/.exec(tex)[1]);
+    };
+    const titleChars = fit('title_chars');
+    const textChars = fit('text_chars');
+    const short = 'x'.repeat(40);                 // 1 title line, 1 Link: line
+    const long = 'y'.repeat(84);                  // 2 title lines, 2 Link: lines
+    const titleLines = (t) => Math.ceil(t.length / titleChars);
+    const linkLines = (t) => Math.ceil((`Link: ${t}`).length / textChars);
+    const expected =
+      fit('title_line') * (titleLines(long) - titleLines(short)) +
+      fit('text_line') * (linkLines(long) - linkLines(short));
+    expect(titleLines(long) - titleLines(short)).toBe(1); // the fixture exercises the term
+    expect(est(long) - est(short)).toBeCloseTo(expected, 2);
+  });
+});

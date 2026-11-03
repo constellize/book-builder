@@ -299,13 +299,21 @@ per block joined by a single newline), so the probe counts body lines with LINE 
 estimator counts paragraphs separately and therefore runs high on a multi-paragraph callout,
 which is the safe direction.
 
-**One constant does not reconcile, and it is low rather than high.** `title_line` measures
-about 19.65pt per wrapped boxed-title line against the 18.00 held in `FIT` (the probe's header
-shows the working: a promptref repeats its title in its own `Link:` line, so the raw difference
-has to have one `text_line` backed out of it). Bounded — only promptref boxes wrap a title,
-none in this book reaches three lines, and the budget carries 110pt of headroom — but it is in
-the direction that hangs builds. Correct it the next round in which the pin count is allowed to
-move, since changing it re-decides promptref boxes.
+**`title_line` was 1.65pt LOW and is now corrected to 19.65 (2026-11-02).** The probe isolates
+it as `(title-83 - title-11) - text_line` = 35.97 − 16.32: a promptref repeats its title in its
+own `Link:` line, so each step in title length moves a boxed-title line AND a body line, and
+one `text_line` has to be backed out. **It is not linear.** The 1→2 step costs 19.65pt and the
+2→3 step only 13.03pt, because the attached boxed title is laid over the box's own
+`top=0.75em` padding — the first extra line eats room that is already there. `FIT` holds the
+LARGER step and applies it to every line over the first: that over-estimates a 3-line title by
+6.6pt (safe, a box stays breakable), where holding 13.03 would under-estimate every 2-line
+title by the same (not safe). No title in this book reaches three lines.
+
+**`note_base` is 0.19pt LOW, and is left that way deliberately.** `note-longurl - note-absent`
+measures 32.19 against `FIT`'s 10 + 2×11 = 32.00, and `note_line` is exactly 11.00, so the
+whole 0.19 sits in `note_base`. It is the unsafe direction, but it is 0.19pt once per box
+against a `FIT.box` that is deliberately 2.29pt HIGH, so no footnote-bearing box is
+under-estimated on balance. Recorded in `fit-probe.md`; raise it if `box` is ever tightened.
 
 **THE CLIFF HAS NO COMMITTED PROBE, DELIBERATELY.** A probe that reproduces it does not
 terminate, and a committed one would eventually be run by somebody who had not read why. The
@@ -323,7 +331,7 @@ exists, or every code box measures as empty):
 | --- | --- | --- |
 | `text_block` | 542.03 | `\the\textheight`: 9in paper less 0.75in top and bottom |
 | `box` | 34.00 | info box with 1 body line (50.00) less one body line |
-| `title_line` | 18.00 | 83-character title (67.97) less 11-character title (49.96) |
+| `title_line` | 19.65 | 83-character title less 11-character title, less one `text_line` for the `Link:` line that also grew; the larger of two unequal steps (see above) |
 | `title_chars` | 42 | an 83-char title takes 2 lines, a 122-char title 3; held back from the ~56 the 0.82\linewidth measure allows |
 | `text_line` | 16.32 | info box 2 paragraphs (66.32) less 1 paragraph (50.00); linear to 11 paragraphs (213.20) |
 | `text_chars` | 50 | 58 characters still set as one line, 60 wrapped; held back for justification and bold/italic runs |

@@ -77,24 +77,45 @@ single one. The values below were measured on 2026-11-02 at the 6x9 trim with
                              48 is held below that, because breaklines breaks at the last
                              break point BEFORE the measure and indents the continuation.
 
-    FIT.title_line  18.00  = NOT cleanly isolated by this probe, and the one number that does
-                             not reconcile. See the note below.
+    FIT.title_line  19.65  = (title-83 - title-11) - text_line. CORRECTED FROM 18.00 on
+                             2026-11-02; see the note below for why it needs that subtraction
+                             and why it is the LARGER of two unequal steps.
+    FIT.note_base   10.00  = measures 10.19, so FIT is 0.19pt LOW. Recorded, not changed;
+                             see the second note below.
 
-TITLE_LINE DOES NOT RECONCILE, AND THAT IS A RECORDED FINDING, NOT A BUG IN THE PROBE.
+TITLE_LINE NEEDS A SUBTRACTION, AND IT IS NOT LINEAR.
 Only a promptref has a variable boxed title, and a promptref also repeats its title in the
-`Link:` line of its body, so lengthening the title lengthens TWO things. The rendered PDF for
-this run shows the 83-character title taking 2 boxed-title lines (so `title_chars` 42 is
-right: 2 x 42 >= 83) and its `Link:` line taking 2 body lines. Backing the body line out of
-the measured difference:
+`Link:` line of its body, so lengthening the title lengthens TWO things. Count the lines in
+the rendered PDF (that is what the heading above this section tells you to do, and it is the
+only way to know): for this run the 11-character title takes 1 boxed-title line and 1 `Link:`
+line, the 83-character title 2 and 2, and the 120-character title 3 and 3. So each difference
+is one extra boxed-title line AND one extra body line, and the body line comes out:
 
-    (title-83 - title-11) - text_line = 35.97 - 16.32 = 19.65pt per extra boxed-title line
+    (title-83  - title-11) - text_line = 35.97 - 16.32 = 19.65pt   (the 1 -> 2 step)
+    (title-120 - title-83) - text_line = 29.35 - 16.32 = 13.03pt   (the 2 -> 3 step)
 
-against `FIT.title_line = 18.00`. So the estimator is about 1.7pt LOW for each line a boxed
-title wraps to. Bounded and not urgent: only promptref boxes wrap a title, no title in this
-book reaches 3 lines, and the budget carries 110pt of headroom -- but it is LOW rather than
-high, which is the direction that matters, and it should be corrected the next time the pin
-count is allowed to move (changing it re-decides promptref boxes, which is a typeset change).
-Recorded here rather than silently patched.
+THE TWO STEPS ARE NOT EQUAL, and that is not a measurement error: the boxed title is
+`attach boxed title to top left` with a negative yshift, so it is laid over the box's own
+`top=0.75em` padding. The first extra line eats room that is already there; later ones have
+to find their own.
+
+`FIT` holds 19.65, the LARGER step, and applies it to every line over the first. That
+over-estimates a 3-line title by 6.6pt -- the safe direction, a box left breakable. Holding
+13.03 instead would under-estimate every 2-line title by 6.6pt, and an under-estimate is what
+pins a box that does not fit. No title in this book reaches 3 lines.
+
+It held 18.00 until 2026-11-02, which was 1.65pt low per wrapped title line. That was recorded
+rather than patched at the time because correcting it re-decides promptref boxes and moves the
+pin count, which is a typeset change rather than a bug fix.
+
+NOTE_BASE IS 0.19pt LOW, AND IS LEFT THAT WAY ON PURPOSE.
+    note-shorturl - note-absent = 21.19  against FIT's base + 1 x line = 21.00
+    note-longurl  - note-absent = 32.19  against FIT's base + 2 x line = 32.00
+`note_line` is exactly 11.00 (the two differences differ by exactly 11.00), so the whole 0.19
+sits in `note_base`, which really measures 10.19. It is LOW, which is the unsafe direction,
+but it is 0.19pt ONCE PER BOX and `FIT.box` is deliberately 2.29pt HIGH, so no box carrying a
+footnote is under-estimated on balance. Changing it would re-decide boxes for a fifth of a
+point. Recorded here instead; raise it if `box` is ever tightened.
 
 A number that disagrees with `FIT` in the LOW direction is the one to act on: the estimate may
 run high (a box stays breakable: a few more split boxes) but never low (a box is pinned that

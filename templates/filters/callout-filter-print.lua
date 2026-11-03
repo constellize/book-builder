@@ -138,7 +138,25 @@ local FIT = {
                         -- it costs the build. The tallest box this book pins measures 429pt.
 
   box         = 34.00,  -- frame + a one-line boxed title + top=0.75em + bottom=0.5em
-  title_line  = 18.00,  -- each FURTHER line a wrapped boxed title takes
+  title_line  = 19.65,  -- each FURTHER line a wrapped boxed title takes.
+                        --
+                        -- MEASURED, and it was 18.00 until 2026-11-02. The probe isolates it
+                        -- as (title-83 - title-11) - text_line = 35.97 - 16.32 = 19.65: a
+                        -- promptref repeats its title in its own `Link:` line, so the raw
+                        -- difference between two title lengths moves TWO things and one body
+                        -- line has to be backed out of it. 18.00 was 1.65pt LOW per wrapped
+                        -- title line, which is the direction that pins a box that does not
+                        -- fit and hangs the build.
+                        --
+                        -- IT IS NOT LINEAR, and 19.65 is the UPPER of the two measured steps.
+                        -- The 1->2 step costs 19.65; the 2->3 step costs only 13.03
+                        -- ((title-120 - title-83) - text_line = 29.35 - 16.32), because the
+                        -- attached boxed title is laid over the box's own top padding and the
+                        -- first extra line eats room the later ones have to find. Using the
+                        -- larger figure for every line over-estimates a 3-line title by
+                        -- 6.6pt, which is the safe direction; using 13.03 would under-estimate
+                        -- a 2-line one by 6.6pt, which is not. No title in this book reaches
+                        -- 3 lines.
   title_chars = 42,     -- characters per line of the boxed title (small, 0.82\linewidth)
 
   text_line   = 16.32,  -- one line of body text: 11pt at linestretch 1.2
