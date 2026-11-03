@@ -69,7 +69,7 @@ module.exports = {
       unnumbered: true
     },
 
-    appendices: ['app[AB].md'], // Appendices (A-B only, others migrated to website)
+    appendices: ['app[ABC].md'], // Appendices (A-C; others migrated to website)
     codebase: './codepromptu',
     images: './images',
     media: './media',

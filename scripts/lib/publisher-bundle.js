@@ -15,7 +15,7 @@ const EXPECTED_FILES = Object.freeze([
   'introduction.md',
   'ch1.md', 'ch2.md', 'ch3.md', 'ch4.md', 'ch5.md',
   'ch6.md', 'ch7.md', 'ch8.md', 'ch9.md',
-  'appA.md', 'appB.md',
+  'appA.md', 'appB.md', 'appC.md',
 ]);
 
 /**

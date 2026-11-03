@@ -90,7 +90,7 @@ the book — nothing has to be re-keyed.
 2. \`introduction.md\`
 3. \`ch1.md\` … \`ch9.md\`
 4. References — generated from a citation database, not included here
-5. \`appA.md\`, \`appB.md\`
+5. \`appA.md\`, \`appB.md\`, \`appC.md\`
 
 ## The figures
 
@@ -173,8 +173,8 @@ remove none, then zip this folder back up and send it.
 
 /**
  * Read a metadata.yaml field as it stood at the tag, not the working tree — the
- * same rule that governs the 13 bundle sources. metadata.yaml isn't one of those
- * 13 files and isn't covered by the dirty check, so reading it off disk could put
+ * same rule that governs the bundle sources. metadata.yaml isn't one of the
+ * EXPECTED_FILES and isn't covered by the dirty check, so reading it off disk could put
  * an uncommitted edition string into a publisher-facing README.
  *
  * A missing metadata.yaml (at the tag or anywhere) is not fatal — packaging still
@@ -328,7 +328,7 @@ function main() {
     throw new Error(`${contentDir} is not inside a git repository`);
   }
 
-  // Scoped to the 13 sources on purpose. book-builder is a submodule, so a plain
+  // Scoped to EXPECTED_FILES on purpose. book-builder is a submodule, so a plain
   // `git status --porcelain` reports ` M book-builder` whenever the build tool is
   // being worked on, which has nothing to do with whether the chapters are clean.
   const dirty = git(contentDir, ['status', '--porcelain', '--'].concat(B.EXPECTED_FILES));
