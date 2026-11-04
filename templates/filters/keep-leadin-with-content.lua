@@ -254,6 +254,65 @@ end
   one, and it was not taken in round 8.
 --]]
 
+-- A RESERVATION INSIDE A CALLOUT IS NEVER CORRECT. Round 9, p.69.
+--
+-- This filter runs BEFORE callout-filter-print.lua on purpose, so that lead-ins inside a
+-- callout are still reachable as blocks (pandoc-defaults-print.yaml). Reaching them was the
+-- deliberate part. Reserving for them was the mistake, and round 8 shipped it.
+--
+-- Round 7 established that tcolorbox's splitting ignores penalties in the box content. That
+-- cuts both ways, and the two cases are not symmetric:
+--
+--   * In a PINNED (unbreakable) box the content is set in a vbox, so \pagegoal is \maxdimen,
+--     \needspaceNow's guard fails and it emits nothing. Inert.
+--   * In a BREAKABLE box tcolorbox sets the content in the MAIN VERTICAL LIST -- that is how
+--     it breaks across pages at all -- so \pagegoal is the page's, the guard passes, and the
+--     reservation can fire \vfil\penalty-\@M inside the box. A forced break with infinite
+--     stretch: the box splits at that exact point and the rest of the page is filled with
+--     white.
+--
+-- That is what p.69 of round 8 was. The ch2 CodePromptu conversation emitted
+-- \needspaceNow{6\baselineskip} between the Human turn box and the AI turn box, because the
+-- AI turn's own text ends in a colon and the quote that follows looked like its content. The
+-- page carried the box title and three lines, 82% white below the last line, and the entire
+-- AI response went overleaf.
+--
+-- The publisher read it as the keep-together from the callout-sheds-footnote fix holding the
+-- AI turn as one unit. It is not: conversation callouts are never pinned (see
+-- generateConversationCallout), the per-turn boxes are the long-standing structure of that
+-- callout, and the blockquote inside a turn already renders as a plain breakable `quote`
+-- outside them. Their suggested fix -- let the box break between those blocks -- was already
+-- the state of the world. The reservation was the whole fault.
+--
+-- So: inert at best, harmful at worst, useful never. Strip them.
+--
+-- Note this runs bottom-up, which is what makes it work: Blocks has already walked the Div's
+-- content and inserted the reservations by the time Div sees it, so this cleans up after it
+-- rather than trying to predict it. Two sites in the manuscript, both in that one ch2 box.
+local function is_reservation(blk)
+  return blk.t == 'RawBlock' and blk.format == 'latex'
+     and blk.text:find('needspace', 1, true) ~= nil
+end
+
+function Div(div)
+  local is_callout = false
+  if div.classes then
+    for _, class in ipairs(div.classes) do
+      if CALLOUT_CLASSES[class] then is_callout = true break end
+    end
+  end
+  if not is_callout then return nil end
+  local kept, dropped = pandoc.List(), 0
+  for _, blk in ipairs(div.content) do
+    -- A combined \FloatBarrier+reservation block goes too, and should: a float barrier is a
+    -- page-level operation and is no more meaningful inside a box than the reservation is.
+    if is_reservation(blk) then dropped = dropped + 1 else kept:insert(blk) end
+  end
+  if dropped == 0 then return nil end
+  div.content = kept
+  return div
+end
+
 function Blocks(blocks)
   local out = pandoc.List()
   for i, blk in ipairs(blocks) do
@@ -306,7 +365,40 @@ function Blocks(blocks)
     -- 50 characters per line, not BODY_CHARS: this text is inside a box, at the narrower
     -- measure the callout filter calls FIT.text_chars. Plus 2 for the frame and padding.
     local box_leadin = (not after_heading) and nxt and leadin_box(blk) or nil
-    if box_leadin and callout_follows(nxt) then
+    if blk.t == 'Header' and nxt and starts_with_table(nxt) then
+      -- A HEADING SITTING DIRECTLY ON A TABLE. Round 9, p.255.
+      --
+      -- READ THE REJECTION NOTE ABOVE FIRST, THEN READ THIS, because this looks like the
+      -- change that was reverted and is not it.
+      --
+      -- What was tried and rejected in round 8: reserving from above the heading at the
+      -- fourteen sites where a heading is followed by a COLON LEAD-IN. That reflowed ch6 far
+      -- enough to leave a promptref footnote stranded on p.178 -- class 2, the fault the
+      -- publisher named first. Fourteen sites, and the reflow reached two chapters away.
+      --
+      -- This is a different shape with no overlap: heading followed directly by a TABLE, with
+      -- no lead-in between them at all. ONE site in the whole manuscript -- appC's "The
+      -- Plugins" -- so there is almost nothing to reflow. Measured book-wide before writing
+      -- it; if that count ever rises, re-measure before trusting this.
+      --
+      -- Why the colon-lead-in rule cannot reach it: that rule is gated on ends_with_colon,
+      -- and the block before this table is a Header, not a paragraph. Nothing fires, so the
+      -- heading has no protection of any kind.
+      --
+      -- Why \section's own keep-with-next does not hold it: it holds a heading to the
+      -- following PARAGRAPH. appC's C.2 and C.3 each have an intro sentence and neither
+      -- strands. C.1 has the table immediately, and a grid table is set as a longtable, whose
+      -- output routine takes its break inside itself -- the same mechanism that put a ghost
+      -- table head above a lead-in and is why tables take the eager form below.
+      --
+      -- The reservation goes ABOVE the heading, which is the only place it can go: emitted
+      -- after the heading it would force the break between heading and table and strand the
+      -- heading by itself, which is the fault being fixed.
+      --
+      -- 13 baselines = the tuned table figure (10, see reservation_for) plus 3 for the
+      -- heading's own line and its before/after skips. Verify on the build, not from here.
+      out:insert(pandoc.RawBlock('latex', reserve('{13\\baselineskip}')))
+    elseif box_leadin and callout_follows(nxt) then
       local text = pandoc.utils.stringify(box_leadin)
       local n = (utf8 and utf8.len and utf8.len(text)) or #text
       local own = math.max(1, math.ceil(n / 50)) + 2
@@ -370,5 +462,13 @@ end
 -- still finds it.
 return {
   { Meta = function(meta) readBodyChars(meta); return meta end },
-  { Blocks = Blocks }
+  { Blocks = Blocks },
+  -- Div gets its OWN set, which runs as a separate pass after Blocks has finished everywhere.
+  -- This was first written as `{ Blocks = Blocks, Div = Div }` on the assumption that one set
+  -- applies element filters bottom-up, so Blocks would populate a Div's content before Div
+  -- saw it. MEASURED, and it is not so: instrumenting Div showed it called with the
+  -- conversation's seven original blocks and no RawBlock among them -- Blocks had not run on
+  -- that content yet, so there was nothing to strip and the reservations survived into the
+  -- output. A later set costs one more pass over the document and is correct.
+  { Div = Div }
 }

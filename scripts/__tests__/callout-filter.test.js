@@ -496,3 +496,49 @@ maybe('callout filter: the FIT constants agree with the committed probe', () => 
     expect(est(long) - est(short)).toBeCloseTo(expected, 2);
   });
 });
+
+// Round 9, publisher review items 1 and 2. Both are about WHERE a reservation may be placed,
+// which is why they live beside the reservation tests above rather than in a file of their own.
+maybe('keep-leadin: reservation placement', () => {
+  beforeAll(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'leadin-place-')); });
+  afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  // p.69 of round 8: the ch2 conversation emitted \needspaceNow{6\baselineskip} between the
+  // Human turn box and the AI turn box, because the AI turn's text ends in a colon and the
+  // quote after it looked like its content. A breakable tcolorbox sets its content in the MAIN
+  // vertical list, so \needspaceNow's \pagegoal guard passes and it fires \vfil\penalty-\@M
+  // INSIDE the box: a forced break with infinite stretch. The page carried the box title and
+  // three lines with 82% white below them, and the whole AI response went overleaf.
+  test('no reservation is emitted inside a callout', () => {
+    const tex = pandocToLatex(
+      '::: conversation\n**Human:** *"short question"*\n\n'
+      + '**AI:** *"the reusable components are:*\n\n> * one\n> * two\n:::\n');
+    expect(tex).not.toMatch(/needspace/);
+  });
+
+  // The guard against over-stripping: the fix must take out reservations INSIDE a callout
+  // without touching the one that introduces it from outside. That one is load-bearing --
+  // it is what keeps a lead-in travelling with its box at all.
+  test('a lead-in outside a callout still reserves', () => {
+    expect(pandocToLatex('As follows:\n\n::: info\nhello\n:::\n'))
+      .toMatch(/\\needspaceNow\{9\\baselineskip\}/);
+  });
+
+  // p.255 of round 8: appC's "C.1 The Plugins" stranded at the page foot with its table
+  // overleaf. Nothing protected it -- the colon-lead-in rule is gated on a paragraph ending in
+  // a colon and the block before the table is a Header -- and \section's own keep-with-next
+  // holds a heading to a following PARAGRAPH, which a longtable is not.
+  test('a heading sitting directly on a table reserves above the heading', () => {
+    const tex = pandocToLatex('## The Plugins\n\n| A | B |\n|---|---|\n| 1 | 2 |\n');
+    expect(tex).toMatch(
+      /\\needspaceNow\{13\\baselineskip\}[\s\S]*\\(sub)?section\{The Plugins\}/);
+  });
+
+  // The heading reservation is deliberately narrow: heading DIRECTLY on a table, nothing
+  // between. Round 8 measured and rejected the general form (reserve above every heading
+  // followed by a colon lead-in): it reflowed ch6 and stranded a promptref footnote on p.178.
+  test('a heading followed by a paragraph does not get that reservation', () => {
+    expect(pandocToLatex('## The Plugins\n\nAn intro sentence.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n'))
+      .not.toMatch(/13\\baselineskip/);
+  });
+});
